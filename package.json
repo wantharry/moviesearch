@@ -1,0 +1,21 @@
+{
+  "name": "imdb-movie-picker",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pipeline: download IMDb's official dataset, filter by genre/rating/votes/runtime, fetch posters from TMDb.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "download": "node scripts/download-datasets.js",
+    "filter": "node scripts/filter-movies.js",
+    "posters": "node scripts/fetch-posters.js",
+    "import": "node scripts/import-datadump.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "csv-parse": "^7.0.2",
+    "express": "^5.2.1"
+  }
+}

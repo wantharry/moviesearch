@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Movie Search</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🎬 Movie Search</h1>
+  </header>
+
+  <div class="layout">
+    <aside class="filters">
+      <div class="field">
+        <label>Genres</label>
+        <div id="genre-list" class="genre-list"></div>
+        <div class="genre-mode">
+          <label><input type="radio" name="genreMode" value="any" checked /> Match any</label>
+          <label><input type="radio" name="genreMode" value="all" /> Match all</label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Rating</label>
+        <div class="range-row">
+          <input id="minRating" type="number" min="0" max="10" step="0.1" value="6" />
+          <span>to</span>
+          <input id="maxRating" type="number" min="0" max="10" step="0.1" value="10" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Number of votes</label>
+        <div class="range-row">
+          <input id="minVotes" type="number" min="0" value="3000" placeholder="min" />
+          <span>to</span>
+          <input id="maxVotes" type="number" min="0" placeholder="max (optional)" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Release year</label>
+        <div class="range-row">
+          <input id="minYear" type="number" placeholder="min" />
+          <span>to</span>
+          <input id="maxYear" type="number" placeholder="max" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Runtime (minutes)</label>
+        <div class="range-row">
+          <input id="minRuntime" type="number" placeholder="min" />
+          <span>to</span>
+          <input id="maxRuntime" type="number" placeholder="max" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Title type</label>
+        <select id="titleTypes" multiple size="4"></select>
+      </div>
+
+      <div class="field">
+        <label>Certification</label>
+        <div id="cert-list" class="genre-list"></div>
+      </div>
+
+      <div class="field">
+        <label>Country</label>
+        <div id="country-list" class="genre-list"></div>
+      </div>
+
+      <div class="field">
+        <label>Sort by</label>
+        <select id="sortBy">
+          <option value="votes">Most votes</option>
+          <option value="rating">Highest rated</option>
+          <option value="year">Newest</option>
+        </select>
+      </div>
+
+      <button id="apply">Apply Filters</button>
+    </aside>
+
+    <main>
+      <div id="status" class="status"></div>
+      <div id="results" class="grid"></div>
+      <button id="loadMore" class="load-more" hidden>Load 50 more</button>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
