@@ -150,6 +150,10 @@ async function attachExtras(movies, { withDetails = false, concurrency = 5 } = {
 const app = express();
 app.use(express.static(path.join(__dirname, "public")));
 
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
 app.get("/api/genres", (req, res) => {
   res.json({ genres: GENRES, titleTypes: TITLE_TYPES, certifications: CERTIFICATIONS, countries: COUNTRIES });
 });

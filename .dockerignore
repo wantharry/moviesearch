@@ -1,0 +1,11 @@
+node_modules
+.git
+.gitignore
+.env
+datadump/
+scripts/
+README.md
+data/*.gz
+data/*.json
+data/movies.db-shm
+data/movies.db-wal
