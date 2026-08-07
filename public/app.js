@@ -134,6 +134,12 @@ function renderCard(movie, index) {
   const poster = movie.posterUrl
     ? `<img src="${movie.posterUrl}" alt="${movie.title}" loading="lazy" />`
     : `<div class="no-poster">No poster</div>`;
+  
+  // Format genres
+  const genresText = movie.genres?.length 
+    ? movie.genres.join(', ') 
+    : '';
+  
   return `
     <div class="card" data-movie-index="${index}">
       ${poster}
@@ -147,6 +153,7 @@ function renderCard(movie, index) {
           <span>${movie.votes?.toLocaleString() ?? "0"} votes</span>
           ${movie.certification ? `<span>${movie.certification}</span>` : ""}
         </div>
+        ${genresText ? `<div class="genres">${genresText}</div>` : ''}
       </div>
     </div>
   `;
