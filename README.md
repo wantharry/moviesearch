@@ -29,6 +29,22 @@ Semantic ("AI") search runs entirely in-process (no Python/subprocess
 dependency) using a local embedding model — see `scripts/embeddings/` for the
 offline scripts that generate new embeddings into `movie_embeddings_local`.
 
+### Slow local disk (e.g. WSL with the repo on `/mnt/c`)?
+
+If `data/movies.db` sits on a slow or virtualized filesystem (WSL2's `/mnt/c`
+is a common case — it can turn what should be sub-millisecond SQLite reads
+into multi-second ones under load), copy it into RAM first:
+
+```
+npm run start:ramdisk
+```
+
+This copies the DB to `/dev/shm` (tmpfs) and points the server at that copy
+via `DB_PATH`. Linux/WSL only, and any poster/detail caching written during
+that session lives only in RAM — it's gone on the next restart unless you
+copy it back over `data/movies.db` yourself. Not needed (and won't apply) in
+the Docker image, which already runs on normal disk.
+
 ## 1. Download IMDb's dataset (one-time, re-run occasionally to refresh)
 
 ```

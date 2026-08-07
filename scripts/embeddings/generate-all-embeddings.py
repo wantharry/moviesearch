@@ -11,7 +11,8 @@ from sentence_transformers import SentenceTransformer
 import time
 
 # Paths (will be in WSL)
-db_path = "/home/openclaw/imdb-temp/movies.db"
+import os
+db_path = os.environ.get("DB_PATH", "/home/openclaw/imdb-temp/movies.db")
 
 print("Loading sentence transformer model...")
 model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -19,6 +20,10 @@ print("✓ Model loaded\n")
 
 # Connect to database
 conn = sqlite3.connect(db_path)
+# WAL mode avoids an fsync-per-commit stall on slow/virtualized filesystems — matters a lot
+# over ~5,000+ batch commits in a run this long.
+conn.execute("PRAGMA journal_mode = WAL")
+conn.execute("PRAGMA synchronous = NORMAL")
 cursor = conn.cursor()
 
 def setup_embeddings_table():
@@ -40,11 +45,14 @@ def generate_all_embeddings():
     
     cursor.execute("""
         SELECT t.imdbId, t.title, td.overview, t.genres
-        FROM titles t
-        LEFT JOIN tmdb_details td ON t.imdbId = td.imdbId
+        FROM tmdb_details td
+        CROSS JOIN titles t ON t.imdbId = td.imdbId
+        LEFT JOIN movie_embeddings_local e ON e.imdbId = td.imdbId
         WHERE t.titleType IN ('movie', 'tvSeries', 'tvMovie', 'tvMiniSeries', 'tvSpecial')
+        AND t.isAdult = 0
         AND td.overview IS NOT NULL
         AND td.overview != ''
+        AND e.imdbId IS NULL
         ORDER BY t.votes DESC
     """)
     

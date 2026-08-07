@@ -7,7 +7,6 @@ export default function Pagination({ search }) {
     totalPages,
     total,
     approximate,
-    isSemanticResult,
     loading,
     goToPrevPage,
     goToNextPage,
@@ -22,7 +21,7 @@ export default function Pagination({ search }) {
     setPageInput(String(page));
   }, [page]);
 
-  if (isSemanticResult || total === 0) return null;
+  if (total === 0) return null;
 
   const canJump = !approximate && totalPages > 1;
 

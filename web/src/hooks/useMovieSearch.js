@@ -19,6 +19,7 @@ export const DEFAULT_FILTERS = {
 };
 
 const PAGE_SIZE = 50;
+const SEMANTIC_LIMIT = 1000;
 
 function titleTypesFor(filters) {
   return filters.titleType === "all" ? "movie,tvSeries,tvMovie,tvMiniSeries,tvSpecial" : filters.titleType;
@@ -51,6 +52,22 @@ function sortByVotesOrRating(list, sortBy) {
     sorted.sort((a, b) => (b.votes || 0) - (a.votes || 0) || (b.rating || 0) - (a.rating || 0));
   }
   return sorted;
+}
+
+// Semantic search fetches up to SEMANTIC_LIMIT results in one request (already sorted by
+// relevance server-side, then re-sortable by votes/rating client-side), but still paginates
+// them PAGE_SIZE at a time in the UI — slicing an already-fetched array locally rather than
+// re-querying the server for "next page".
+function sliceSemanticPage(list, pageNum) {
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const clamped = Math.max(1, Math.min(Math.trunc(pageNum) || 1, totalPages));
+  const start = (clamped - 1) * PAGE_SIZE;
+  return {
+    results: list.slice(start, start + PAGE_SIZE),
+    page: clamped,
+    totalPages,
+    hasMore: clamped < totalPages,
+  };
 }
 
 function paramsFromUrl() {
@@ -135,17 +152,19 @@ export function useMovieSearch() {
       setLoading(true);
       try {
         if (activeSemantic && activeQuery) {
-          const params = new URLSearchParams({ q: activeQuery, limit: "200", ...buildFilterParams(activeFilters) });
+          const params = new URLSearchParams({ q: activeQuery, limit: String(SEMANTIC_LIMIT), ...buildFilterParams(activeFilters) });
           const data = await fetchSemanticSearch(params, controller.signal);
-          setAllSemanticResults(data.results);
-          setResults(sortByVotesOrRating(data.results, activeFilters.sortBy));
+          const sorted = sortByVotesOrRating(data.results, activeFilters.sortBy);
+          setAllSemanticResults(sorted);
+          const firstPage = sliceSemanticPage(sorted, 1);
+          setResults(firstPage.results);
           setIsSemanticResult(true);
-          setTotal(data.results.length);
-          setTotalPages(1);
+          setTotal(sorted.length);
+          setTotalPages(firstPage.totalPages);
           setApproximate(false);
-          setHasMore(false);
+          setHasMore(firstPage.hasMore);
           setPage(1);
-          setStatusMessage(`🤖 Found ${data.results.length.toLocaleString()} movies using AI search`);
+          setStatusMessage(`🤖 Found ${sorted.length.toLocaleString()} contextually relevant movies`);
         } else {
           setIsSemanticResult(false);
           const filterParams = buildFilterParams(activeFilters);
@@ -224,7 +243,13 @@ export function useMovieSearch() {
       const next = { ...filters, sortBy };
       setFilters(next);
       if (isSemanticResult) {
-        setResults(sortByVotesOrRating(allSemanticResults, sortBy));
+        const sorted = sortByVotesOrRating(allSemanticResults, sortBy);
+        setAllSemanticResults(sorted);
+        const firstPage = sliceSemanticPage(sorted, 1);
+        setResults(firstPage.results);
+        setPage(1);
+        setTotalPages(firstPage.totalPages);
+        setHasMore(firstPage.hasMore);
       } else {
         runSearch({ pageArg: 1, filtersOverride: next });
       }
@@ -246,16 +271,31 @@ export function useMovieSearch() {
     [query, runSearch]
   );
 
+  // Semantic-search pages are sliced client-side from the already-fetched allSemanticResults —
+  // no network round-trip needed, unlike keyword search's page navigation below.
+  const showSemanticPage = useCallback(
+    (pageNum) => {
+      const p = sliceSemanticPage(allSemanticResults, pageNum);
+      setResults(p.results);
+      setPage(p.page);
+      setTotalPages(p.totalPages);
+      setHasMore(p.hasMore);
+    },
+    [allSemanticResults]
+  );
+
   const goToNextPage = useCallback(() => {
-    if (isSemanticResult || !hasMore) return;
+    if (!hasMore) return;
+    if (isSemanticResult) return showSemanticPage(page + 1);
     if (nextOffset !== null) runSearch({ offsetArg: nextOffset, pageArg: page + 1 });
     else runSearch({ pageArg: page + 1 });
-  }, [isSemanticResult, hasMore, nextOffset, page, runSearch]);
+  }, [isSemanticResult, hasMore, nextOffset, page, runSearch, showSemanticPage]);
 
   const goToPrevPage = useCallback(() => {
-    if (isSemanticResult || page <= 1) return;
+    if (page <= 1) return;
+    if (isSemanticResult) return showSemanticPage(page - 1);
     runSearch({ pageArg: page - 1 });
-  }, [isSemanticResult, page, runSearch]);
+  }, [isSemanticResult, page, runSearch, showSemanticPage]);
 
   // Jumping to an arbitrary page (vs. just Prev/Next) only makes sense when totalPages is a
   // real count, not the approximate lower-bound used for genre/text-search filters (see
@@ -263,12 +303,13 @@ export function useMovieSearch() {
   // anything stable there.
   const goToPage = useCallback(
     (pageNum) => {
-      if (isSemanticResult || approximate) return;
+      if (!isSemanticResult && approximate) return;
       const target = Math.max(1, Math.min(Math.trunc(pageNum) || 1, totalPages));
       if (target === page) return;
+      if (isSemanticResult) return showSemanticPage(target);
       runSearch({ pageArg: target });
     },
-    [isSemanticResult, approximate, totalPages, page, runSearch]
+    [isSemanticResult, approximate, totalPages, page, runSearch, showSemanticPage]
   );
 
   const goToLastPage = useCallback(() => goToPage(totalPages), [goToPage, totalPages]);

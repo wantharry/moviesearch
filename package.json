@@ -13,7 +13,8 @@
     "import": "node scripts/import-datadump.js",
     "dev:web": "vite",
     "build": "vite build",
-    "start": "node server.js"
+    "start": "node server.js",
+    "start:ramdisk": "mkdir -p /dev/shm && cp data/movies.db /dev/shm/movies.db && DB_PATH=/dev/shm/movies.db node server.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
