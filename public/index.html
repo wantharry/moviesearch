@@ -20,6 +20,19 @@
     <button id="filterToggle" class="filter-toggle" aria-label="Toggle filters">Filters</button>
   </header>
 
+  <div class="search-container">
+    <div class="search-wrapper">
+      <input 
+        type="text" 
+        id="searchInput" 
+        placeholder="Search movies by title..." 
+        autocomplete="off"
+      />
+      <button id="clearSearch" class="clear-search" hidden>&times;</button>
+      <div id="autocomplete" class="autocomplete" hidden></div>
+    </div>
+  </div>
+
   <div class="layout">
     <div id="filterOverlay" class="filter-overlay"></div>
     <aside class="filters" id="filters">

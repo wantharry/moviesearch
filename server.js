@@ -25,14 +25,7 @@ const GENRES = [
 const TITLE_TYPES = ["movie", "tvMovie", "tvSeries", "tvMiniSeries", "tvSpecial", "short", "video", "videoGame", "tvShort"];
 const TV_TITLE_TYPES = new Set(["tvSeries", "tvMiniSeries", "tvSpecial", "tvShort"]);
 
-const CERTIFICATIONS = ["PG-13", "R"];
-
-// Map simplified certifications to underlying TMDb values
-const CERT_MAPPING = {
-  "PG-13": ["G", "PG", "PG-13", "TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "NR", null], // includes unrated/unknown
-  "R": ["R", "NC-17", "TV-MA"],
-};
-
+// Certifications removed - shown on cards only, not for filtering
 const COUNTRIES = [
   { code: "US", label: "USA" },
   { code: "IN", label: "India" },
@@ -63,6 +56,28 @@ try {
 }
 db.exec(`CREATE TABLE IF NOT EXISTS posters (imdbId TEXT PRIMARY KEY, tmdbId INTEGER, posterUrl TEXT, fetchedAt INTEGER)`);
 db.exec(`CREATE TABLE IF NOT EXISTS tmdb_details (imdbId TEXT PRIMARY KEY, certification TEXT, countries TEXT, overview TEXT, fetchedAt INTEGER)`);
+
+// Create FTS5 virtual table for fast text search
+console.log('Setting up FTS5 search index...');
+try {
+  // Check if FTS table exists
+  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='titles_fts'`).get();
+  
+  if (!tableExists) {
+    console.log('Creating FTS5 table...');
+    db.exec(`CREATE VIRTUAL TABLE titles_fts USING fts5(imdbId UNINDEXED, title, tokenize='porter unicode61')`);
+    console.log('Populating FTS5 search index (this may take a moment)...');
+    db.exec(`INSERT INTO titles_fts(imdbId, title) SELECT imdbId, title FROM titles WHERE isAdult = 0`);
+    const count = db.prepare(`SELECT COUNT(*) AS c FROM titles_fts`).get().c;
+    console.log(`FTS5 index ready with ${count.toLocaleString()} titles!`);
+  } else {
+    const count = db.prepare(`SELECT COUNT(*) AS c FROM titles_fts`).get().c;
+    console.log(`FTS5 index already exists with ${count.toLocaleString()} titles`);
+  }
+} catch (e) {
+  console.error('FTS5 setup error:', e.message);
+  console.error('Text search will not be available');
+}
 
 // Migration: Add overview column if it doesn't exist (for existing databases)
 try {
@@ -127,6 +142,7 @@ async function fetchPoster(imdbId) {
   const cached = getCachedPoster.get(imdbId);
   if (cached) return cached;
 
+  // No TMDb API available or poster already cached as null
   if (!TMDB_API_KEY) return { tmdbId: null, posterUrl: null };
 
   try {
@@ -145,6 +161,7 @@ async function fetchPoster(imdbId) {
 
 // US certification + production countries via TMDb, combined into a single request per title
 // (append_to_response avoids a second round-trip) and cached so repeat searches are instant.
+let tmdbDetailsFetched = 0; // Counter for logging
 async function fetchDetails(imdbId, tmdbId, titleType) {
   const cached = getCachedDetails.get(imdbId);
   if (cached) return { certification: cached.certification, countries: cached.countries ? cached.countries.split(",").filter(Boolean) : [], overview: cached.overview || null };
@@ -152,6 +169,10 @@ async function fetchDetails(imdbId, tmdbId, titleType) {
   if (!TMDB_API_KEY || !tmdbId) return { certification: null, countries: [], overview: null };
 
   try {
+    tmdbDetailsFetched++;
+    if (tmdbDetailsFetched % 10 === 0) {
+      console.log(`TMDb API calls for details: ${tmdbDetailsFetched}`);
+    }
     let certification = null;
     let countries = [];
     let overview = null;
@@ -175,7 +196,7 @@ async function fetchDetails(imdbId, tmdbId, titleType) {
 }
 
 // Fetches poster (+ certification/countries, if requested) for a list of movies with limited concurrency.
-async function attachExtras(movies, { withDetails = false, concurrency = 5 } = {}) {
+async function attachExtras(movies, { withDetails = false, concurrency = 40 } = {}) {
   const queue = [...movies];
   async function worker() {
     while (queue.length) {
@@ -202,12 +223,60 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
+// New endpoint to fetch movie details on-demand (for modal popup)
+app.get("/api/movie/:imdbId", async (req, res) => {
+  const { imdbId } = req.params;
+  const row = db.prepare(`SELECT * FROM titles WHERE imdbId = ?`).get(imdbId);
+  if (!row) return res.status(404).json({ error: "Movie not found" });
+  
+  row.genres = row.genres.split(",").filter(Boolean);
+  const poster = await fetchPoster(row.imdbId);
+  row.tmdbId = poster.tmdbId;
+  row.posterUrl = poster.posterUrl;
+  
+  const details = await fetchDetails(row.imdbId, poster.tmdbId, row.titleType);
+  row.certification = details.certification;
+  row.countries = details.countries;
+  row.overview = details.overview;
+  
+  res.json(row);
+});
+
 app.get("/api/genres", (req, res) => {
-  res.json({ genres: GENRES, titleTypes: TITLE_TYPES, certifications: CERTIFICATIONS, countries: COUNTRIES });
+  res.json({ genres: GENRES, titleTypes: TITLE_TYPES, countries: COUNTRIES });
+});
+
+app.get("/api/autocomplete", async (req, res) => {
+  const { q = "" } = req.query;
+  const query = q.trim();
+  
+  if (!query || query.length < 2) {
+    return res.json({ results: [] });
+  }
+
+  try {
+    // Use FTS5 for fuzzy text search
+    const searchQuery = query.split(/\s+/).map(term => `${term}*`).join(' ');
+    const results = db.prepare(`
+      SELECT t.imdbId, t.title, t.year, t.rating, t.votes
+      FROM titles_fts
+      JOIN titles t ON t.imdbId = titles_fts.imdbId
+      WHERE titles_fts MATCH ?
+      ORDER BY t.votes DESC
+      LIMIT 10
+    `).all(searchQuery);
+
+    await attachExtras(results);
+    res.json({ results });
+  } catch (error) {
+    console.error('Autocomplete error:', error);
+    res.json({ results: [] });
+  }
 });
 
 app.get("/api/search", async (req, res) => {
   const {
+    q = "",
     genres = "",
     genreMode = "any",
     minRating = "0",
@@ -222,13 +291,9 @@ app.get("/api/search", async (req, res) => {
     sortBy = "votes",
     page = "1",
     pageSize = "50",
-    certifications = "",
     countries = "",
   } = req.query;
 
-  const certList = certifications.split(",").map((c) => c.trim()).filter((c) => CERTIFICATIONS.includes(c));
-  // Expand simplified cert selections to actual TMDb values
-  const expandedCerts = certList.flatMap((c) => CERT_MAPPING[c] || []);
   const countryList = countries.split(",").map((c) => c.trim()).filter((c) => COUNTRY_CODES.has(c));
 
   const conditions = [];
@@ -286,6 +351,16 @@ app.get("/api/search", async (req, res) => {
     conditions.push(`titleType IN (${types.map(() => "?").join(",")})`);
     params.push(...types);
   }
+  
+  // Text search using FTS5
+  const searchQuery = q.trim();
+  let ftsJoin = "";
+  if (searchQuery) {
+    ftsJoin = "JOIN titles_fts ON titles_fts.imdbId = t.imdbId";
+    const ftsQuery = searchQuery.split(/\s+/).map(term => `${term}*`).join(' ');
+    conditions.push("titles_fts MATCH ?");
+    params.push(ftsQuery);
+  }
 
   const genreList = genres.split(",").map((g) => g.trim()).filter((g) => GENRES.includes(g));
   if (genreList.length) {
@@ -303,20 +378,19 @@ app.get("/api/search", async (req, res) => {
     ? parseInt(req.query.offset, 10) || 0
     : (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit;
 
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM titles WHERE ${whereClause}`).get(...params).c;
-  const selectSql = `SELECT imdbId, title, year, runtimeMinutes, genres, rating, votes, titleType FROM titles WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM titles t ${ftsJoin} WHERE ${whereClause}`).get(...params).c;
+  const selectSql = `SELECT t.imdbId, t.title, t.year, t.runtimeMinutes, t.genres, t.rating, t.votes, t.titleType FROM titles t ${ftsJoin} WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
 
-  if (!expandedCerts.length && !countryList.length) {
+  // No certification filtering - just fetch and display with details
+  if (!countryList.length) {
     const rows = db.prepare(selectSql).all(...params, limit, offset).map((r) => ({ ...r, genres: r.genres.split(",").filter(Boolean) }));
     await attachExtras(rows, { withDetails: true });
     return res.json({ total, page: Number(page), pageSize: limit, hasMore: offset + rows.length < total, results: rows });
   }
 
-  // Certification/country of origin aren't in the local dataset — they have to be looked up (and
-  // cached) from TMDb per title, so we scan candidate batches from the DB, fetch+filter, and keep
-  // going until we have enough matches or run out of candidates. `total`/pagination become approximate.
+  // Country filtering only (rare case) - scan batches
   const BATCH = 100;
-  const MAX_BATCHES = 50; // Increased from 10 to handle 12.7M title database
+  const MAX_BATCHES = 50;
   let scanOffset = offset;
   const matches = [];
   let reachedEnd = false;
@@ -333,7 +407,6 @@ app.get("/api/search", async (req, res) => {
     await attachExtras(batchRows, { withDetails: true });
     matches.push(
       ...batchRows.filter((m) => {
-        if (expandedCerts.length && !expandedCerts.includes(m.certification)) return false;
         if (countryList.length && !m.countries.some((c) => countryList.includes(c))) return false;
         return true;
       })
@@ -346,14 +419,19 @@ app.get("/api/search", async (req, res) => {
     if (matches.length >= limit) break;
   }
 
+  const paginatedResults = matches.slice(0, limit);
+  const actualTotal = matches.length;
+  const stoppedEarly = !reachedEnd && matches.length >= limit;
+  const hasMore = stoppedEarly || matches.length > limit;
+
   res.json({
-    total,
+    total: stoppedEarly ? matches.length + 1 : actualTotal,
     page: Number(page),
     pageSize: limit,
-    hasMore: !reachedEnd && scanOffset < total,
+    hasMore: hasMore,
     nextOffset: scanOffset,
-    approximate: true,
-    results: matches,
+    approximate: !reachedEnd,
+    results: paginatedResults,
   });
 });
 

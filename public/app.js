@@ -10,7 +10,6 @@ const state = {
 
 const els = {
   genreList: document.getElementById("genre-list"),
-  certList: document.getElementById("cert-list"),
   countryList: document.getElementById("country-list"),
   titleTypes: document.getElementById("titleTypes"),
   results: document.getElementById("results"),
@@ -37,6 +36,9 @@ const els = {
   filterToggle: document.getElementById("filterToggle"),
   filterClose: document.getElementById("filterClose"),
   filterOverlay: document.getElementById("filterOverlay"),
+  searchInput: document.getElementById("searchInput"),
+  clearSearch: document.getElementById("clearSearch"),
+  autocomplete: document.getElementById("autocomplete"),
 };
 
 function openFilters() {
@@ -53,19 +55,29 @@ function chip(value, label) {
   return `<label class="chip"><input type="checkbox" value="${value}" />${label}</label>`;
 }
 
+function formatTitleType(type) {
+  // Convert camelCase to readable format
+  // tvMovie -> TV Movie, tvSeries -> TV Series, etc.
+  const formatted = type
+    .replace(/([A-Z])/g, ' $1') // Add space before capital letters
+    .replace(/^tv/i, 'TV') // TV prefix
+    .trim();
+  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+}
+
 async function loadFilterOptions() {
   const res = await fetch("/api/genres");
-  const { genres, titleTypes, certifications, countries } = await res.json();
+  const { genres, titleTypes, countries } = await res.json();
 
   els.genreList.innerHTML = genres.map((g) => chip(g, g)).join("");
-  els.certList.innerHTML = certifications.map((c) => chip(c, c)).join("");
+  // Certification filter removed - certs shown on cards only
   els.countryList.innerHTML = countries.map((c) => chip(c.code, c.label)).join("");
 
   els.titleTypes.innerHTML = titleTypes
-    .map((t) => `<option value="${t}" ${t === "movie" ? "selected" : ""}>${t}</option>`)
+    .map((t) => `<option value="${t}" ${t === "movie" ? "selected" : ""}>${formatTitleType(t)}</option>`)
     .join("");
 
-  [els.genreList, els.certList, els.countryList].forEach((list) =>
+  [els.genreList, els.countryList].forEach((list) =>
     list.addEventListener("change", updateCounts)
   );
   updateCounts();
@@ -74,8 +86,6 @@ async function loadFilterOptions() {
 function updateCounts() {
   document.getElementById("genreCount").textContent =
     els.genreList.querySelectorAll("input:checked").length || "";
-  document.getElementById("certCount").textContent =
-    els.certList.querySelectorAll("input:checked").length || "";
   document.getElementById("countryCount").textContent =
     els.countryList.querySelectorAll("input:checked").length || "";
 }
@@ -83,15 +93,19 @@ function updateCounts() {
 function buildQuery(page, offset) {
   const genres = [...els.genreList.querySelectorAll("input:checked")].map((el) => el.value).join(",");
   const genreMode = document.querySelector('input[name="genreMode"]:checked').value;
-  const titleTypes = [...els.titleTypes.selectedOptions].map((o) => o.value).join(",");
-  const certifications = [...els.certList.querySelectorAll("input:checked")].map((el) => el.value).join(",");
+  let titleTypes = [...els.titleTypes.selectedOptions].map((o) => o.value).join(",");
   const countries = [...els.countryList.querySelectorAll("input:checked")].map((el) => el.value).join(",");
+  const searchQuery = els.searchInput.value.trim();
+
+  // When searching by text, include both movies and TV series by default
+  if (searchQuery && titleTypes === "movie") {
+    titleTypes = "movie,tvSeries";
+  }
 
   const params = new URLSearchParams({
     genres,
     genreMode,
     titleTypes,
-    certifications,
     countries,
     minRating: document.getElementById("minRating").value || "0",
     maxRating: document.getElementById("maxRating").value || "10",
@@ -103,6 +117,7 @@ function buildQuery(page, offset) {
     maxRuntime: document.getElementById("maxRuntime").value || "",
     sortBy: document.getElementById("sortBy").value,
     pageSize: String(state.pageSize),
+    q: searchQuery,
   });
   if (offset !== undefined) params.set("offset", String(offset));
   else params.set("page", String(page));
@@ -131,9 +146,33 @@ function renderCard(movie, index) {
   `;
 }
 
+function renderSkeletonCards(count = 20) {
+  const skeletons = [];
+  for (let i = 0; i < count; i++) {
+    skeletons.push(`
+      <div class="skeleton-card">
+        <div class="skeleton-poster"></div>
+        <div class="skeleton-info">
+          <div class="skeleton-title"></div>
+          <div class="skeleton-meta"></div>
+        </div>
+      </div>
+    `);
+  }
+  return `<div class="skeleton-container">${skeletons.join('')}</div>`;
+}
+
 async function search(page = 1, append = false, offset = undefined) {
+  // Clear state AND UI immediately when not appending - this ensures updatePagination hides controls
+  if (!append) {
+    state.movies = [];
+    state.total = 0;  // Reset total so updatePagination() will hide pagination
+    els.results.innerHTML = renderSkeletonCards(20);
+  }
+  
   els.status.textContent = "Loading...";
   els.loadMore.hidden = true;
+  // Force hide pagination during loading
   els.pagination.hidden = true;
   els.paginationTop.hidden = true;
 
@@ -141,17 +180,18 @@ async function search(page = 1, append = false, offset = undefined) {
   const res = await fetch(`/api/search?${params.toString()}`);
   if (!res.ok) {
     els.status.textContent = "Something went wrong.";
+    els.results.innerHTML = "";
     return;
   }
   const data = await res.json();
-
-  if (!append) {
-    els.results.innerHTML = "";
-    state.movies = [];
-  }
   
   const startIndex = state.movies.length;
   state.movies.push(...data.results);
+  
+  // Replace skeleton with actual results
+  if (!append) {
+    els.results.innerHTML = "";
+  }
   els.results.insertAdjacentHTML("beforeend", data.results.map((m, i) => renderCard(m, startIndex + i)).join(""));
 
   state.page = data.page;
@@ -168,7 +208,8 @@ async function search(page = 1, append = false, offset = undefined) {
 }
 
 function updatePagination() {
-  if (state.total === 0) {
+  // Hide pagination if no results or no movies loaded yet
+  if (state.total === 0 || state.movies.length === 0) {
     els.pagination.hidden = true;
     els.paginationTop.hidden = true;
     return;
@@ -262,8 +303,8 @@ function openModal(movie) {
   modalTitle.textContent = movie.title;
   modalYear.textContent = movie.year ?? "—";
   modalRating.textContent = `★ ${movie.rating ?? "—"}`;
-  modalCert.textContent = movie.certification || "";
-  modalOverview.textContent = movie.overview || "No description available.";
+  modalCert.textContent = "Loading...";
+  modalOverview.textContent = "Loading details...";
   
   if (movie.posterUrl) {
     modalPoster.src = movie.posterUrl.replace("/w342", "/w500"); // Higher res for modal
@@ -275,6 +316,23 @@ function openModal(movie) {
   
   modal.classList.add("open");
   document.body.style.overflow = "hidden";
+  
+  // Fetch full details on-demand
+  fetch(`/api/movie/${movie.imdbId}`)
+    .then((res) => res.json())
+    .then((details) => {
+      modalCert.textContent = details.certification || "";
+      modalOverview.textContent = details.overview || "No description available.";
+      // Update poster with higher resolution if available
+      if (details.posterUrl) {
+        modalPoster.src = details.posterUrl.replace("/w342", "/w500");
+      }
+    })
+    .catch((err) => {
+      console.error("Failed to fetch movie details:", err);
+      modalCert.textContent = "";
+      modalOverview.textContent = "Failed to load details.";
+    });
 }
 
 function closeModal() {
@@ -300,5 +358,128 @@ els.results.addEventListener("click", (e) => {
   const movie = state.movies[index];
   if (movie) openModal(movie);
 });
+
+// Search and autocomplete functionality
+let autocompleteController = null;
+let selectedAutocompleteIndex = -1;
+
+async function fetchAutocomplete(query) {
+  if (!query || query.length < 2) {
+    els.autocomplete.hidden = true;
+    return;
+  }
+
+  if (autocompleteController) autocompleteController.abort();
+  autocompleteController = new AbortController();
+
+  try {
+    const res = await fetch(`/api/autocomplete?q=${encodeURIComponent(query)}`, {
+      signal: autocompleteController.signal
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    
+    if (data.results.length === 0) {
+      els.autocomplete.hidden = true;
+      return;
+    }
+
+    els.autocomplete.innerHTML = data.results.map((movie, index) => `
+      <div class="autocomplete-item" data-index="${index}" data-title="${movie.title}">
+        ${movie.posterUrl 
+          ? `<img src="${movie.posterUrl}" alt="${movie.title}" loading="lazy" />` 
+          : '<div class="no-poster-small">No poster</div>'
+        }
+        <div class="autocomplete-info">
+          <div class="autocomplete-title">${movie.title}</div>
+          <div class="autocomplete-meta">
+            ${movie.year || '—'} • <span class="autocomplete-rating">★ ${movie.rating || '—'}</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    
+    els.autocomplete.hidden = false;
+    selectedAutocompleteIndex = -1;
+  } catch (error) {
+    if (error.name !== 'AbortError') {
+      console.error('Autocomplete fetch error:', error);
+    }
+  }
+}
+
+let searchDebounceTimer;
+els.searchInput.addEventListener("input", (e) => {
+  const query = e.target.value.trim();
+  els.clearSearch.hidden = !query;
+  
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => fetchAutocomplete(query), 300);
+});
+
+els.searchInput.addEventListener("keydown", (e) => {
+  const items = els.autocomplete.querySelectorAll(".autocomplete-item");
+  
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    selectedAutocompleteIndex = Math.min(selectedAutocompleteIndex + 1, items.length - 1);
+    updateAutocompleteSelection(items);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    selectedAutocompleteIndex = Math.max(selectedAutocompleteIndex - 1, -1);
+    updateAutocompleteSelection(items);
+  } else if (e.key === "Enter") {
+    if (selectedAutocompleteIndex >= 0 && items[selectedAutocompleteIndex]) {
+      e.preventDefault();
+      items[selectedAutocompleteIndex].click();
+    } else if (els.searchInput.value.trim()) {
+      e.preventDefault();
+      els.autocomplete.hidden = true;
+      search(1, false);
+    }
+  } else if (e.key === "Escape") {
+    els.autocomplete.hidden = true;
+  }
+});
+
+function updateAutocompleteSelection(items) {
+  items.forEach((item, index) => {
+    item.classList.toggle("selected", index === selectedAutocompleteIndex);
+    if (index === selectedAutocompleteIndex) {
+      item.scrollIntoView({ block: "nearest" });
+    }
+  });
+}
+
+els.autocomplete.addEventListener("click", (e) => {
+  const item = e.target.closest(".autocomplete-item");
+  if (!item) return;
+  
+  const title = item.dataset.title;
+  els.searchInput.value = title;
+  els.clearSearch.hidden = false;
+  els.autocomplete.hidden = true;
+  search(1, false);
+});
+
+els.clearSearch.addEventListener("click", () => {
+  els.searchInput.value = "";
+  els.clearSearch.hidden = true;
+  els.autocomplete.hidden = true;
+  search(1, false);
+});
+
+// Close autocomplete when clicking outside
+document.addEventListener("click", (e) => {
+  if (!els.searchInput.contains(e.target) && !els.autocomplete.contains(e.target)) {
+    els.autocomplete.hidden = true;
+  }
+});
+
+// Initialize state and hide pagination before first search to prevent flash during loading
+els.pagination.hidden = true;
+els.paginationTop.hidden = true;
+state.movies = [];
+state.total = 0;
 
 loadFilterOptions().then(() => search(1, false));
