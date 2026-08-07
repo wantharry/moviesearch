@@ -2,17 +2,31 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0" />
 <title>Movie Search</title>
+<meta name="theme-color" content="#0f1115" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Movie Search" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icon.svg" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header>
     <h1>🎬 Movie Search</h1>
+    <button id="filterToggle" class="filter-toggle" aria-label="Toggle filters">Filters</button>
   </header>
 
   <div class="layout">
-    <aside class="filters">
+    <div id="filterOverlay" class="filter-overlay"></div>
+    <aside class="filters" id="filters">
+      <div class="filters-header">
+        <span>Filters</span>
+        <button id="filterClose" class="filter-close" aria-label="Close filters">&times;</button>
+      </div>
       <div class="field">
         <label>Genres</label>
         <div id="genre-list" class="genre-list"></div>
@@ -25,36 +39,36 @@
       <div class="field">
         <label>Rating</label>
         <div class="range-row">
-          <input id="minRating" type="number" min="0" max="10" step="0.1" value="6" />
+          <input id="minRating" type="number" inputmode="decimal" min="0" max="10" step="0.1" value="6" />
           <span>to</span>
-          <input id="maxRating" type="number" min="0" max="10" step="0.1" value="10" />
+          <input id="maxRating" type="number" inputmode="decimal" min="0" max="10" step="0.1" value="10" />
         </div>
       </div>
 
       <div class="field">
         <label>Number of votes</label>
         <div class="range-row">
-          <input id="minVotes" type="number" min="0" value="3000" placeholder="min" />
+          <input id="minVotes" type="number" inputmode="numeric" min="0" value="3000" placeholder="min" />
           <span>to</span>
-          <input id="maxVotes" type="number" min="0" placeholder="max (optional)" />
+          <input id="maxVotes" type="number" inputmode="numeric" min="0" placeholder="max (optional)" />
         </div>
       </div>
 
       <div class="field">
         <label>Release year</label>
         <div class="range-row">
-          <input id="minYear" type="number" placeholder="min" />
+          <input id="minYear" type="number" inputmode="numeric" placeholder="min" />
           <span>to</span>
-          <input id="maxYear" type="number" placeholder="max" />
+          <input id="maxYear" type="number" inputmode="numeric" placeholder="max" />
         </div>
       </div>
 
       <div class="field">
         <label>Runtime (minutes)</label>
         <div class="range-row">
-          <input id="minRuntime" type="number" placeholder="min" />
+          <input id="minRuntime" type="number" inputmode="numeric" placeholder="min" />
           <span>to</span>
-          <input id="maxRuntime" type="number" placeholder="max" />
+          <input id="maxRuntime" type="number" inputmode="numeric" placeholder="max" />
         </div>
       </div>
 
@@ -82,13 +96,13 @@
         </select>
       </div>
 
-      <button id="apply">Apply Filters</button>
+      <button id="apply" type="button">Apply Filters</button>
     </aside>
 
     <main>
       <div id="status" class="status"></div>
       <div id="results" class="grid"></div>
-      <button id="loadMore" class="load-more" hidden>Load 50 more</button>
+      <button id="loadMore" class="load-more" type="button" hidden>Load 50 more</button>
     </main>
   </div>
 

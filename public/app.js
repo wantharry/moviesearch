@@ -14,7 +14,21 @@ const els = {
   status: document.getElementById("status"),
   loadMore: document.getElementById("loadMore"),
   apply: document.getElementById("apply"),
+  filters: document.getElementById("filters"),
+  filterToggle: document.getElementById("filterToggle"),
+  filterClose: document.getElementById("filterClose"),
+  filterOverlay: document.getElementById("filterOverlay"),
 };
+
+function openFilters() {
+  els.filters.classList.add("open");
+  els.filterOverlay.classList.add("open");
+}
+
+function closeFilters() {
+  els.filters.classList.remove("open");
+  els.filterOverlay.classList.remove("open");
+}
 
 async function loadFilterOptions() {
   const res = await fetch("/api/genres");
@@ -112,9 +126,15 @@ async function search(page = 1, append = false, offset = undefined) {
   els.loadMore.hidden = !data.hasMore;
 }
 
-els.apply.addEventListener("click", () => search(1, false));
+els.apply.addEventListener("click", () => {
+  closeFilters();
+  search(1, false);
+});
 els.loadMore.addEventListener("click", () =>
   state.nextOffset !== null ? search(undefined, true, state.nextOffset) : search(state.page + 1, true)
 );
+els.filterToggle.addEventListener("click", openFilters);
+els.filterClose.addEventListener("click", closeFilters);
+els.filterOverlay.addEventListener("click", closeFilters);
 
 loadFilterOptions().then(() => search(1, false));
