@@ -25,7 +25,13 @@ const GENRES = [
 const TITLE_TYPES = ["movie", "tvMovie", "tvSeries", "tvMiniSeries", "tvSpecial", "short", "video", "videoGame", "tvShort"];
 const TV_TITLE_TYPES = new Set(["tvSeries", "tvMiniSeries", "tvSpecial", "tvShort"]);
 
-const CERTIFICATIONS = ["G", "PG", "PG-13", "R", "NC-17", "TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "TV-MA", "NR"];
+const CERTIFICATIONS = ["PG-13", "R"];
+
+// Map simplified certifications to underlying TMDb values
+const CERT_MAPPING = {
+  "PG-13": ["G", "PG", "PG-13", "TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "NR", null], // includes unrated/unknown
+  "R": ["R", "NC-17", "TV-MA"],
+};
 
 const COUNTRIES = [
   { code: "US", label: "USA" },
@@ -56,27 +62,65 @@ try {
   process.exit(1);
 }
 db.exec(`CREATE TABLE IF NOT EXISTS posters (imdbId TEXT PRIMARY KEY, tmdbId INTEGER, posterUrl TEXT, fetchedAt INTEGER)`);
-db.exec(`CREATE TABLE IF NOT EXISTS tmdb_details (imdbId TEXT PRIMARY KEY, certification TEXT, countries TEXT, fetchedAt INTEGER)`);
+db.exec(`CREATE TABLE IF NOT EXISTS tmdb_details (imdbId TEXT PRIMARY KEY, certification TEXT, countries TEXT, overview TEXT, fetchedAt INTEGER)`);
+
+// Migration: Add overview column if it doesn't exist (for existing databases)
+try {
+  db.exec(`ALTER TABLE tmdb_details ADD COLUMN overview TEXT`);
+} catch (e) {
+  // Column already exists, ignore
+}
 
 const getCachedPoster = db.prepare("SELECT tmdbId, posterUrl FROM posters WHERE imdbId = ?");
 const savePoster = db.prepare(
   "INSERT INTO posters (imdbId, tmdbId, posterUrl, fetchedAt) VALUES (@imdbId, @tmdbId, @posterUrl, @fetchedAt) " +
   "ON CONFLICT(imdbId) DO UPDATE SET tmdbId=excluded.tmdbId, posterUrl=excluded.posterUrl, fetchedAt=excluded.fetchedAt"
 );
-const getCachedDetails = db.prepare("SELECT certification, countries FROM tmdb_details WHERE imdbId = ?");
+const getCachedDetails = db.prepare("SELECT certification, countries, overview FROM tmdb_details WHERE imdbId = ?");
 const saveDetails = db.prepare(
-  "INSERT INTO tmdb_details (imdbId, certification, countries, fetchedAt) VALUES (@imdbId, @certification, @countries, @fetchedAt) " +
-  "ON CONFLICT(imdbId) DO UPDATE SET certification=excluded.certification, countries=excluded.countries, fetchedAt=excluded.fetchedAt"
+  "INSERT INTO tmdb_details (imdbId, certification, countries, overview, fetchedAt) VALUES (@imdbId, @certification, @countries, @overview, @fetchedAt) " +
+  "ON CONFLICT(imdbId) DO UPDATE SET certification=excluded.certification, countries=excluded.countries, overview=excluded.overview, fetchedAt=excluded.fetchedAt"
 );
 
 // TMDb issues two key formats: a short v3 api_key (query param) and a long
 // v4 "read access token" JWT (Bearer header). Support whichever was pasted.
 const isV4Token = TMDB_API_KEY.split(".").length === 3;
-async function tmdbFetch(urlPath) {
+let tmdbRequestCount = 0;
+let tmdbResetTime = Date.now() + 1000;
+
+async function tmdbFetch(urlPath, retries = 3) {
+  // Simple rate limiting: max 40 requests per second (buffer below 50 limit)
+  const now = Date.now();
+  if (now >= tmdbResetTime) {
+    tmdbRequestCount = 0;
+    tmdbResetTime = now + 1000;
+  }
+  if (tmdbRequestCount >= 40) {
+    const waitMs = tmdbResetTime - now;
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+    return tmdbFetch(urlPath, retries);
+  }
+  tmdbRequestCount++;
+
   const sep = urlPath.includes("?") ? "&" : "?";
   const url = isV4Token ? `https://api.themoviedb.org/3${urlPath}` : `https://api.themoviedb.org/3${urlPath}${sep}api_key=${TMDB_API_KEY}`;
-  const res = await fetch(url, isV4Token ? { headers: { Authorization: `Bearer ${TMDB_API_KEY}` } } : undefined);
-  return res.ok ? res.json() : {};
+  
+  try {
+    const res = await fetch(url, isV4Token ? { headers: { Authorization: `Bearer ${TMDB_API_KEY}` } } : undefined);
+    
+    // Handle rate limiting
+    if (res.status === 429 && retries > 0) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10);
+      console.warn(`TMDb rate limit hit, retrying after ${retryAfter}s...`);
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      return tmdbFetch(urlPath, retries - 1);
+    }
+    
+    return res.ok ? res.json() : {};
+  } catch (error) {
+    console.error(`TMDb fetch error for ${urlPath}:`, error.message);
+    return {};
+  }
 }
 
 async function fetchPoster(imdbId) {
@@ -103,27 +147,30 @@ async function fetchPoster(imdbId) {
 // (append_to_response avoids a second round-trip) and cached so repeat searches are instant.
 async function fetchDetails(imdbId, tmdbId, titleType) {
   const cached = getCachedDetails.get(imdbId);
-  if (cached) return { certification: cached.certification, countries: cached.countries ? cached.countries.split(",").filter(Boolean) : [] };
+  if (cached) return { certification: cached.certification, countries: cached.countries ? cached.countries.split(",").filter(Boolean) : [], overview: cached.overview || null };
 
-  if (!TMDB_API_KEY || !tmdbId) return { certification: null, countries: [] };
+  if (!TMDB_API_KEY || !tmdbId) return { certification: null, countries: [], overview: null };
 
   try {
     let certification = null;
     let countries = [];
+    let overview = null;
     if (TV_TITLE_TYPES.has(titleType)) {
       const data = await tmdbFetch(`/tv/${tmdbId}?append_to_response=content_ratings`);
       certification = data.content_ratings?.results?.find((r) => r.iso_3166_1 === "US")?.rating || null;
       countries = data.origin_country || [];
+      overview = data.overview || null;
     } else {
       const data = await tmdbFetch(`/movie/${tmdbId}?append_to_response=release_dates`);
       const us = data.release_dates?.results?.find((r) => r.iso_3166_1 === "US");
       certification = us?.release_dates?.find((d) => d.certification)?.certification || null;
       countries = (data.production_countries || []).map((c) => c.iso_3166_1);
+      overview = data.overview || null;
     }
-    saveDetails.run({ imdbId, certification, countries: countries.join(","), fetchedAt: Date.now() });
-    return { certification, countries };
+    saveDetails.run({ imdbId, certification, countries: countries.join(","), overview, fetchedAt: Date.now() });
+    return { certification, countries, overview };
   } catch {
-    return { certification: null, countries: [] };
+    return { certification: null, countries: [], overview: null };
   }
 }
 
@@ -140,6 +187,7 @@ async function attachExtras(movies, { withDetails = false, concurrency = 5 } = {
         const details = await fetchDetails(movie.imdbId, poster.tmdbId, movie.titleType);
         movie.certification = details.certification;
         movie.countries = details.countries;
+        movie.overview = details.overview;
       }
     }
   }
@@ -180,13 +228,38 @@ app.get("/api/search", async (req, res) => {
   } = req.query;
 
   const certList = certifications.split(",").map((c) => c.trim()).filter((c) => CERTIFICATIONS.includes(c));
+  // Expand simplified cert selections to actual TMDb values
+  const expandedCerts = certList.flatMap((c) => CERT_MAPPING[c] || []);
   const countryList = countries.split(",").map((c) => c.trim()).filter((c) => COUNTRY_CODES.has(c));
 
-  const conditions = ["rating >= ?", "rating <= ?", "votes >= ?"];
-  const params = [parseFloat(minRating), parseFloat(maxRating), parseInt(minVotes, 10) || 0];
+  const conditions = [];
+  const params = [];
+  
+  // Handle rating filter - allow NULL if minRating is 0
+  const minRatingVal = parseFloat(minRating);
+  const maxRatingVal = parseFloat(maxRating);
+  if (minRatingVal > 0) {
+    conditions.push("rating >= ?");
+    params.push(minRatingVal);
+  } else {
+    conditions.push("(rating IS NULL OR rating >= ?)");
+    params.push(minRatingVal);
+  }
+  conditions.push("(rating IS NULL OR rating <= ?)");
+  params.push(maxRatingVal);
+  
+  // Handle votes filter - allow NULL if minVotes is 0
+  const minVotesVal = parseInt(minVotes, 10) || 0;
+  if (minVotesVal > 0) {
+    conditions.push("votes >= ?");
+    params.push(minVotesVal);
+  } else {
+    conditions.push("(votes IS NULL OR votes >= ?)");
+    params.push(minVotesVal);
+  }
 
   if (maxVotes) {
-    conditions.push("votes <= ?");
+    conditions.push("(votes IS NULL OR votes <= ?)");
     params.push(parseInt(maxVotes, 10));
   }
   if (minYear) {
@@ -234,17 +307,17 @@ app.get("/api/search", async (req, res) => {
   const total = db.prepare(`SELECT COUNT(*) AS c FROM titles WHERE ${whereClause}`).get(...params).c;
   const selectSql = `SELECT imdbId, title, year, runtimeMinutes, genres, rating, votes, titleType FROM titles WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
 
-  if (!certList.length && !countryList.length) {
+  if (!expandedCerts.length && !countryList.length) {
     const rows = db.prepare(selectSql).all(...params, limit, offset).map((r) => ({ ...r, genres: r.genres.split(",").filter(Boolean) }));
-    await attachExtras(rows);
+    await attachExtras(rows, { withDetails: true });
     return res.json({ total, page: Number(page), pageSize: limit, hasMore: offset + rows.length < total, results: rows });
   }
 
   // Certification/country of origin aren't in the local dataset — they have to be looked up (and
   // cached) from TMDb per title, so we scan candidate batches from the DB, fetch+filter, and keep
   // going until we have enough matches or run out of candidates. `total`/pagination become approximate.
-  const BATCH = 50;
-  const MAX_BATCHES = 10;
+  const BATCH = 100;
+  const MAX_BATCHES = 50; // Increased from 10 to handle 12.7M title database
   let scanOffset = offset;
   const matches = [];
   let reachedEnd = false;
@@ -261,7 +334,7 @@ app.get("/api/search", async (req, res) => {
     await attachExtras(batchRows, { withDetails: true });
     matches.push(
       ...batchRows.filter((m) => {
-        if (certList.length && !certList.includes(m.certification)) return false;
+        if (expandedCerts.length && !expandedCerts.includes(m.certification)) return false;
         if (countryList.length && !m.countries.some((c) => countryList.includes(c))) return false;
         return true;
       })
