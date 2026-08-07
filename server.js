@@ -3,7 +3,6 @@
 const path = require("path");
 const express = require("express");
 const Database = require("better-sqlite3");
-const { spawn } = require("child_process");
 
 try {
   process.loadEnvFile(path.join(__dirname, ".env"));
@@ -12,7 +11,7 @@ try {
 }
 
 const DATA_DIR = path.join(__dirname, "data");
-const DB_PATH = path.join(DATA_DIR, "movies.db");
+const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, "movies.db");
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "";
 const PORT = process.env.PORT || 3001;
 
@@ -26,58 +25,6 @@ const GENRES = [
 const TITLE_TYPES = ["movie", "tvMovie", "tvSeries", "tvMiniSeries", "tvSpecial", "short", "video", "videoGame", "tvShort"];
 const TV_TITLE_TYPES = new Set(["tvSeries", "tvMiniSeries", "tvSpecial", "tvShort"]);
 
-// Start persistent semantic search server (keeps AI model loaded in memory)
-let semanticSearchServer = null;
-let semanticSearchReady = false;
-const semanticSearchQueue = [];
-
-function startSemanticSearchServer() {
-  const wslPath = process.env.WINDIR ? `${process.env.WINDIR}\\System32\\wsl.exe` : 'wsl';
-  
-  console.log('Starting AI semantic search server...');
-  semanticSearchServer = spawn(wslPath, [
-    '-d', 'Ubuntu',
-    '-e', 'bash', '-c',
-    'cd ~/imdb-temp && ~/.venvs/semantic-search/bin/python3 /mnt/c/Users/openclaw/projects/ai/apps1/imdb/semantic-server.py'
-  ]);
-  
-  let stderrBuffer = '';
-  
-  semanticSearchServer.stderr.on('data', (data) => {
-    const message = data.toString();
-    stderrBuffer += message;
-    
-    if (message.includes('READY')) {
-      semanticSearchReady = true;
-      console.log('✓ AI semantic search server ready!');
-    } else {
-      process.stderr.write(message);
-    }
-  });
-  
-  semanticSearchServer.on('error', (err) => {
-    console.error('Semantic search server error:', err);
-    semanticSearchReady = false;
-  });
-  
-  semanticSearchServer.on('exit', (code) => {
-    console.log(`Semantic search server exited with code ${code}`);
-    semanticSearchReady = false;
-    semanticSearchServer = null;
-  });
-}
-
-// Start the persistent server
-startSemanticSearchServer();
-
-// Cleanup on exit
-process.on('exit', () => {
-  if (semanticSearchServer) {
-    semanticSearchServer.kill();
-  }
-});
-
-// Certifications removed - shown on cards only, not for filtering
 const COUNTRIES = [
   { code: "US", label: "USA" },
   { code: "IN", label: "India" },
@@ -106,19 +53,38 @@ try {
   console.error(`Could not open ${DB_PATH}. Run "npm run import" first.`);
   process.exit(1);
 }
+// Default (rollback-journal) mode fsyncs on every write commit; on a slow or virtualized
+// filesystem that can make a single INSERT block the entire process (better-sqlite3 is
+// synchronous, so a blocked write stalls every in-flight request) for many seconds. WAL mode
+// avoids that: readers aren't blocked by writers, and commits don't need a full fsync per write.
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
 db.exec(`CREATE TABLE IF NOT EXISTS posters (imdbId TEXT PRIMARY KEY, tmdbId INTEGER, posterUrl TEXT, fetchedAt INTEGER)`);
 db.exec(`CREATE TABLE IF NOT EXISTS tmdb_details (imdbId TEXT PRIMARY KEY, certification TEXT, countries TEXT, overview TEXT, fetchedAt INTEGER)`);
+// The live DB's posters/tmdb_details tables predate the PRIMARY KEY above (an earlier
+// migration recreated them as plain columns), so the ON CONFLICT(imdbId) upserts below would
+// fail without this. A unique index gives ON CONFLICT the same target a primary key would.
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_posters_imdbId ON posters(imdbId)`);
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tmdb_details_imdbId ON tmdb_details(imdbId)`);
+
+// Without these, `WHERE isAdult=0 AND titleType=? ORDER BY votes/rating/year DESC LIMIT 50`
+// has no index that satisfies both the filter and the sort, so SQLite materializes and
+// sorts the *entire* filtered set (hundreds of thousands of rows) before applying LIMIT —
+// this was the single biggest contributor to slow search/page loads (16s+ per page on the
+// unfiltered "browse movies by votes" query, the default view). With the matching compound
+// index SQLite walks rows in already-sorted order and stops at LIMIT: ~10ms instead.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_titles_browse_votes ON titles(isAdult, titleType, votes DESC, rating DESC)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_titles_browse_rating ON titles(isAdult, titleType, rating DESC, votes DESC)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_titles_browse_year ON titles(isAdult, titleType, year DESC, votes DESC)`);
 
 // Create FTS5 virtual table for fast text search
-console.log('Setting up FTS5 search index...');
+console.log("Setting up FTS5 search index...");
 try {
-  // Check if FTS table exists
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='titles_fts'`).get();
-  
   if (!tableExists) {
-    console.log('Creating FTS5 table...');
+    console.log("Creating FTS5 table...");
     db.exec(`CREATE VIRTUAL TABLE titles_fts USING fts5(imdbId UNINDEXED, title, tokenize='porter unicode61')`);
-    console.log('Populating FTS5 search index (this may take a moment)...');
+    console.log("Populating FTS5 search index (this may take a moment)...");
     db.exec(`INSERT INTO titles_fts(imdbId, title) SELECT imdbId, title FROM titles WHERE isAdult = 0`);
     const count = db.prepare(`SELECT COUNT(*) AS c FROM titles_fts`).get().c;
     console.log(`FTS5 index ready with ${count.toLocaleString()} titles!`);
@@ -127,8 +93,8 @@ try {
     console.log(`FTS5 index already exists with ${count.toLocaleString()} titles`);
   }
 } catch (e) {
-  console.error('FTS5 setup error:', e.message);
-  console.error('Text search will not be available');
+  console.error("FTS5 setup error:", e.message);
+  console.error("Text search will not be available");
 }
 
 // Migration: Add overview column if it doesn't exist (for existing databases)
@@ -139,16 +105,15 @@ try {
 }
 
 const getCachedPoster = db.prepare("SELECT tmdbId, posterUrl FROM posters WHERE imdbId = ?");
-// Posters and TMDb details are pre-populated, no need to insert
-// const savePoster = db.prepare(
-//   "INSERT INTO posters (imdbId, tmdbId, posterUrl, fetchedAt) VALUES (@imdbId, @tmdbId, @posterUrl, @fetchedAt) " +
-//   "ON CONFLICT(imdbId) DO UPDATE SET tmdbId=excluded.tmdbId, posterUrl=excluded.posterUrl, fetchedAt=excluded.fetchedAt"
-// );
 const getCachedDetails = db.prepare("SELECT certification, countries, overview FROM tmdb_details WHERE imdbId = ?");
-// const saveDetails = db.prepare(
-//   "INSERT INTO tmdb_details (imdbId, certification, countries, overview, fetchedAt) VALUES (@imdbId, @certification, @countries, @overview, @fetchedAt) " +
-//   "ON CONFLICT(imdbId) DO UPDATE SET certification=excluded.certification, countries=excluded.countries, overview=excluded.overview, fetchedAt=excluded.fetchedAt"
-// );
+const savePoster = db.prepare(
+  "INSERT INTO posters (imdbId, tmdbId, posterUrl, fetchedAt) VALUES (@imdbId, @tmdbId, @posterUrl, @fetchedAt) " +
+  "ON CONFLICT(imdbId) DO UPDATE SET tmdbId=excluded.tmdbId, posterUrl=excluded.posterUrl, fetchedAt=excluded.fetchedAt"
+);
+const saveDetails = db.prepare(
+  "INSERT INTO tmdb_details (imdbId, certification, countries, overview, fetchedAt) VALUES (@imdbId, @certification, @countries, @overview, @fetchedAt) " +
+  "ON CONFLICT(imdbId) DO UPDATE SET certification=excluded.certification, countries=excluded.countries, overview=excluded.overview, fetchedAt=excluded.fetchedAt"
+);
 
 // TMDb issues two key formats: a short v3 api_key (query param) and a long
 // v4 "read access token" JWT (Bearer header). Support whichever was pasted.
@@ -165,25 +130,27 @@ async function tmdbFetch(urlPath, retries = 3) {
   }
   if (tmdbRequestCount >= 40) {
     const waitMs = tmdbResetTime - now;
-    await new Promise(resolve => setTimeout(resolve, waitMs));
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
     return tmdbFetch(urlPath, retries);
   }
   tmdbRequestCount++;
 
   const sep = urlPath.includes("?") ? "&" : "?";
   const url = isV4Token ? `https://api.themoviedb.org/3${urlPath}` : `https://api.themoviedb.org/3${urlPath}${sep}api_key=${TMDB_API_KEY}`;
-  
+
   try {
-    const res = await fetch(url, isV4Token ? { headers: { Authorization: `Bearer ${TMDB_API_KEY}` } } : undefined);
-    
-    // Handle rate limiting
+    // Without a timeout, a slow/hung TMDb response leaves that one request pending forever —
+    // it wouldn't block other requests (unlike the synchronous SQLite calls elsewhere), but a
+    // client would still hang indefinitely waiting on it.
+    const res = await fetch(url, { headers: isV4Token ? { Authorization: `Bearer ${TMDB_API_KEY}` } : undefined, signal: AbortSignal.timeout(10000) });
+
     if (res.status === 429 && retries > 0) {
-      const retryAfter = parseInt(res.headers.get('Retry-After') || '5', 10);
+      const retryAfter = parseInt(res.headers.get("Retry-After") || "5", 10);
       console.warn(`TMDb rate limit hit, retrying after ${retryAfter}s...`);
-      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
       return tmdbFetch(urlPath, retries - 1);
     }
-    
+
     return res.ok ? res.json() : {};
   } catch (error) {
     console.error(`TMDb fetch error for ${urlPath}:`, error.message);
@@ -195,7 +162,6 @@ async function fetchPoster(imdbId) {
   const cached = getCachedPoster.get(imdbId);
   if (cached) return cached;
 
-  // No TMDb API available or poster already cached as null
   if (!TMDB_API_KEY) return { tmdbId: null, posterUrl: null };
 
   try {
@@ -214,18 +180,19 @@ async function fetchPoster(imdbId) {
 
 // US certification + production countries via TMDb, combined into a single request per title
 // (append_to_response avoids a second round-trip) and cached so repeat searches are instant.
-let tmdbDetailsFetched = 0; // Counter for logging
 async function fetchDetails(imdbId, tmdbId, titleType) {
   const cached = getCachedDetails.get(imdbId);
-  if (cached) return { certification: cached.certification, countries: cached.countries ? cached.countries.split(",").filter(Boolean) : [], overview: cached.overview || null };
+  if (cached) {
+    return {
+      certification: cached.certification,
+      countries: cached.countries ? cached.countries.split(",").filter(Boolean) : [],
+      overview: cached.overview || null,
+    };
+  }
 
   if (!TMDB_API_KEY || !tmdbId) return { certification: null, countries: [], overview: null };
 
   try {
-    tmdbDetailsFetched++;
-    if (tmdbDetailsFetched % 10 === 0) {
-      console.log(`TMDb API calls for details: ${tmdbDetailsFetched}`);
-    }
     let certification = null;
     let countries = [];
     let overview = null;
@@ -249,7 +216,7 @@ async function fetchDetails(imdbId, tmdbId, titleType) {
 }
 
 // Fetches poster (+ certification/countries, if requested) for a list of movies with limited concurrency.
-async function attachExtras(movies, { withDetails = false, concurrency = 40 } = {}) {
+async function attachExtras(movies, { withDetails = false, concurrency = 20 } = {}) {
   const queue = [...movies];
   async function worker() {
     while (queue.length) {
@@ -269,67 +236,24 @@ async function attachExtras(movies, { withDetails = false, concurrency = 40 } = 
   return movies;
 }
 
-const app = express();
-app.use(express.static(path.join(__dirname, "public")));
+// Fires off poster/detail fetches for rows that came back from a cache-only query without
+// them, so the *next* search for the same titles is instant. Never awaited by a request —
+// failures are logged and otherwise ignored so they can't affect a live response.
+function backgroundFillExtras(rows) {
+  if (!rows.length) return;
+  attachExtras(rows, { withDetails: true, concurrency: Math.min(rows.length, 20) }).catch((err) => {
+    console.error("Background cache fill error:", err.message);
+  });
+}
 
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
-});
-
-// New endpoint to fetch movie details on-demand (for modal popup)
-app.get("/api/movie/:imdbId", async (req, res) => {
-  const { imdbId } = req.params;
-  const row = db.prepare(`SELECT * FROM titles WHERE imdbId = ?`).get(imdbId);
-  if (!row) return res.status(404).json({ error: "Movie not found" });
-  
-  row.genres = row.genres.split(",").filter(Boolean);
-  const poster = await fetchPoster(row.imdbId);
-  row.tmdbId = poster.tmdbId;
-  row.posterUrl = poster.posterUrl;
-  
-  const details = await fetchDetails(row.imdbId, poster.tmdbId, row.titleType);
-  row.certification = details.certification;
-  row.countries = details.countries;
-  row.overview = details.overview;
-  
-  res.json(row);
-});
-
-app.get("/api/genres", (req, res) => {
-  res.json({ genres: GENRES, titleTypes: TITLE_TYPES, countries: COUNTRIES });
-});
-
-app.get("/api/autocomplete", async (req, res) => {
-  const { q = "" } = req.query;
-  const query = q.trim();
-  
-  if (!query || query.length < 2) {
-    return res.json({ results: [] });
-  }
-
-  try {
-    // Use FTS5 for fuzzy text search
-    const searchQuery = query.split(/\s+/).map(term => `${term}*`).join(' ');
-    const results = db.prepare(`
-      SELECT t.imdbId, t.title, t.year, t.rating, t.votes
-      FROM titles_fts
-      JOIN titles t ON t.imdbId = titles_fts.imdbId
-      WHERE titles_fts MATCH ?
-      ORDER BY t.votes DESC
-      LIMIT 10
-    `).all(searchQuery);
-
-    await attachExtras(results);
-    res.json({ results });
-  } catch (error) {
-    console.error('Autocomplete error:', error);
-    res.json({ results: [] });
-  }
-});
-
-app.get("/api/search", async (req, res) => {
+// Parses the shared filter query params (genres/rating/votes/year/runtime/type/certification/
+// country) into plain values once. Two consumers turn this into different things: keyword
+// search (buildSqlConditions, below) needs SQL against all 12.6M titles; semantic search
+// filters an in-memory array of just the ~100K embedded titles instead (see
+// matchesFiltersInMemory) — building the SQL and the in-memory checks from the same parsed
+// values keeps the two filter behaviors from drifting apart.
+function parseFilterParams(query) {
   const {
-    q = "",
     genres = "",
     genreMode = "any",
     minRating = "0",
@@ -341,149 +265,340 @@ app.get("/api/search", async (req, res) => {
     minRuntime = "",
     maxRuntime = "",
     titleTypes = "movie",
-    sortBy = "votes",
-    page = "1",
-    pageSize = "50",
+    certFilter = "",
     countries = "",
-  } = req.query;
+  } = query;
 
-  const countryList = countries.split(",").map((c) => c.trim()).filter((c) => COUNTRY_CODES.has(c));
+  return {
+    minRatingVal: parseFloat(minRating),
+    maxRatingVal: parseFloat(maxRating),
+    minVotesVal: parseInt(minVotes, 10) || 0,
+    maxVotesVal: maxVotes ? parseInt(maxVotes, 10) : null,
+    minYearVal: minYear ? parseInt(minYear, 10) : null,
+    maxYearVal: maxYear ? parseInt(maxYear, 10) : null,
+    minRuntimeVal: minRuntime ? parseInt(minRuntime, 10) : null,
+    maxRuntimeVal: maxRuntime ? parseInt(maxRuntime, 10) : null,
+    types: titleTypes.split(",").map((t) => t.trim()).filter((t) => TITLE_TYPES.includes(t)),
+    genreList: genres.split(",").map((g) => g.trim()).filter((g) => GENRES.includes(g)),
+    genreMode,
+    certs: certFilter ? certFilter.split(",").map((c) => c.trim()).filter(Boolean) : [],
+    countryList: countries.split(",").map((c) => c.trim()).filter((c) => COUNTRY_CODES.has(c)),
+  };
+}
 
-  const conditions = [];
+function buildSqlConditions(parsed) {
+  const conditions = ["t.isAdult = 0"];
   const params = [];
-  
-  // Handle rating filter - allow NULL if minRating is 0
-  const minRatingVal = parseFloat(minRating);
-  const maxRatingVal = parseFloat(maxRating);
-  if (minRatingVal > 0) {
-    conditions.push("rating >= ?");
-    params.push(minRatingVal);
+
+  if (parsed.minRatingVal > 0) {
+    conditions.push("t.rating >= ?");
+    params.push(parsed.minRatingVal);
   } else {
-    conditions.push("(rating IS NULL OR rating >= ?)");
-    params.push(minRatingVal);
+    conditions.push("(t.rating IS NULL OR t.rating >= ?)");
+    params.push(parsed.minRatingVal);
   }
-  conditions.push("(rating IS NULL OR rating <= ?)");
-  params.push(maxRatingVal);
-  
-  // Handle votes filter - allow NULL if minVotes is 0
-  const minVotesVal = parseInt(minVotes, 10) || 0;
-  if (minVotesVal > 0) {
-    conditions.push("votes >= ?");
-    params.push(minVotesVal);
+  conditions.push("(t.rating IS NULL OR t.rating <= ?)");
+  params.push(parsed.maxRatingVal);
+
+  if (parsed.minVotesVal > 0) {
+    conditions.push("t.votes >= ?");
+    params.push(parsed.minVotesVal);
   } else {
-    conditions.push("(votes IS NULL OR votes >= ?)");
-    params.push(minVotesVal);
+    conditions.push("(t.votes IS NULL OR t.votes >= ?)");
+    params.push(parsed.minVotesVal);
+  }
+  if (parsed.maxVotesVal != null) {
+    conditions.push("(t.votes IS NULL OR t.votes <= ?)");
+    params.push(parsed.maxVotesVal);
+  }
+  if (parsed.minYearVal != null) {
+    conditions.push("t.year >= ?");
+    params.push(parsed.minYearVal);
+  }
+  if (parsed.maxYearVal != null) {
+    conditions.push("t.year <= ?");
+    params.push(parsed.maxYearVal);
+  }
+  if (parsed.minRuntimeVal != null) {
+    conditions.push("t.runtimeMinutes >= ?");
+    params.push(parsed.minRuntimeVal);
+  }
+  if (parsed.maxRuntimeVal != null) {
+    conditions.push("t.runtimeMinutes <= ?");
+    params.push(parsed.maxRuntimeVal);
+  }
+  if (parsed.types.length) {
+    conditions.push(`t.titleType IN (${parsed.types.map(() => "?").join(",")})`);
+    params.push(...parsed.types);
+  }
+  if (parsed.genreList.length) {
+    const genreConds = parsed.genreList.map(() => "t.genres LIKE ?");
+    params.push(...parsed.genreList.map((g) => `%,${g},%`));
+    conditions.push(`(${genreConds.join(parsed.genreMode === "all" ? " AND " : " OR ")})`);
   }
 
-  if (maxVotes) {
-    conditions.push("(votes IS NULL OR votes <= ?)");
-    params.push(parseInt(maxVotes, 10));
+  let needsDetailsJoin = false;
+  if (parsed.certs.length) {
+    needsDetailsJoin = true;
+    conditions.push(`td.certification IN (${parsed.certs.map(() => "?").join(",")})`);
+    params.push(...parsed.certs);
   }
-  if (minYear) {
-    conditions.push("year >= ?");
-    params.push(parseInt(minYear, 10));
-  }
-  if (maxYear) {
-    conditions.push("year <= ?");
-    params.push(parseInt(maxYear, 10));
-  }
-  if (minRuntime) {
-    conditions.push("runtimeMinutes >= ?");
-    params.push(parseInt(minRuntime, 10));
-  }
-  if (maxRuntime) {
-    conditions.push("runtimeMinutes <= ?");
-    params.push(parseInt(maxRuntime, 10));
-  }
-  
-  // Always exclude adult content
-  conditions.push("isAdult = 0");
 
-  const types = titleTypes.split(",").map((t) => t.trim()).filter((t) => TITLE_TYPES.includes(t));
-  if (types.length) {
-    conditions.push(`titleType IN (${types.map(() => "?").join(",")})`);
-    params.push(...types);
+  return { conditions, params, needsDetailsJoin };
+}
+
+// Mirrors buildSqlConditions' logic, but as a JS predicate over the in-memory embedding-index
+// metadata (see initSemanticSearch) instead of a SQL WHERE clause — semantic search filters
+// only the ~100K embedded titles, entirely in memory, rather than joining against them.
+function matchesFiltersInMemory(meta, parsed) {
+  if (parsed.types.length && !parsed.types.includes(meta.titleType)) return false;
+
+  if (parsed.minRatingVal > 0 && (meta.rating == null || meta.rating < parsed.minRatingVal)) return false;
+  if (meta.rating != null && meta.rating > parsed.maxRatingVal) return false;
+
+  if (parsed.minVotesVal > 0 && (meta.votes == null || meta.votes < parsed.minVotesVal)) return false;
+  if (parsed.maxVotesVal != null && meta.votes != null && meta.votes > parsed.maxVotesVal) return false;
+
+  if (parsed.minYearVal != null && (meta.year == null || meta.year < parsed.minYearVal)) return false;
+  if (parsed.maxYearVal != null && (meta.year == null || meta.year > parsed.maxYearVal)) return false;
+  if (parsed.minRuntimeVal != null && (meta.runtimeMinutes == null || meta.runtimeMinutes < parsed.minRuntimeVal)) return false;
+  if (parsed.maxRuntimeVal != null && (meta.runtimeMinutes == null || meta.runtimeMinutes > parsed.maxRuntimeVal)) return false;
+
+  if (parsed.genreList.length) {
+    const match =
+      parsed.genreMode === "all"
+        ? parsed.genreList.every((g) => meta.genresList.includes(g))
+        : parsed.genreList.some((g) => meta.genresList.includes(g));
+    if (!match) return false;
   }
-  
-  // Text search using FTS5
+
+  if (parsed.certs.length && !parsed.certs.includes(meta.certification)) return false;
+
+  return true;
+}
+
+const app = express();
+app.use(express.static(path.join(__dirname, "public")));
+
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// Fetch full movie details on-demand (for the detail modal). Single-row, so a live
+// TMDb fetch here is acceptable latency-wise — and now that the cache actually
+// persists, repeat opens of the same title are instant.
+app.get("/api/movie/:imdbId", async (req, res) => {
+  const { imdbId } = req.params;
+  const row = db.prepare(`SELECT * FROM titles WHERE imdbId = ?`).get(imdbId);
+  if (!row) return res.status(404).json({ error: "Movie not found" });
+
+  row.genres = row.genres.split(",").filter(Boolean);
+  const poster = await fetchPoster(row.imdbId);
+  row.tmdbId = poster.tmdbId;
+  row.posterUrl = poster.posterUrl;
+
+  const details = await fetchDetails(row.imdbId, poster.tmdbId, row.titleType);
+  row.certification = details.certification;
+  row.countries = details.countries;
+  row.overview = details.overview;
+
+  res.json(row);
+});
+
+app.get("/api/genres", (req, res) => {
+  res.json({ genres: GENRES, titleTypes: TITLE_TYPES, countries: COUNTRIES });
+});
+
+app.get("/api/autocomplete", (req, res) => {
+  const { q = "" } = req.query;
+  const query = q.trim();
+
+  if (!query || query.length < 2) {
+    return res.json({ results: [] });
+  }
+
+  try {
+    const searchQuery = query.split(/\s+/).map((term) => `${term}*`).join(" ");
+    // A short prefix (e.g. "Mo*") can match a huge fraction of the 12.6M-title FTS index —
+    // `ORDER BY votes DESC` over that many matches forces SQLite to materialize and sort all
+    // of them (no index can satisfy an FTS MATCH + external-column ORDER BY together), which
+    // measured 60s+ and blocks every other request since better-sqlite3 is synchronous. Capping
+    // the raw FTS match count *before* the join+sort bounds the worst case to low hundreds of ms
+    // regardless of how broad the prefix is, at the cost of not necessarily finding the single
+    // most-voted title among an extremely broad match set — an acceptable trade for autocomplete.
+    const results = db
+      .prepare(
+        `SELECT t.imdbId, t.title, t.year, t.rating, t.votes, p.posterUrl AS posterUrl
+         FROM (SELECT imdbId FROM titles_fts WHERE titles_fts MATCH ? LIMIT 500) m
+         JOIN titles t ON t.imdbId = m.imdbId
+         LEFT JOIN posters p ON p.imdbId = t.imdbId
+         ORDER BY t.votes DESC
+         LIMIT 10`
+      )
+      .all(searchQuery);
+
+    res.json({ results });
+  } catch (error) {
+    console.error("Autocomplete error:", error);
+    res.json({ results: [] });
+  }
+});
+
+app.get("/api/search", (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+  const { q = "", sortBy = "votes", page = "1", pageSize = "50" } = req.query;
+
+  const parsedFilters = parseFilterParams(req.query);
+  const { conditions, params, needsDetailsJoin } = buildSqlConditions(parsedFilters);
+  const { countryList } = parsedFilters;
+
   const searchQuery = q.trim();
-  let ftsJoin = "";
+  let fromClause = "FROM titles t";
+  let ftsParams = [];
   if (searchQuery) {
-    ftsJoin = "JOIN titles_fts ON titles_fts.imdbId = t.imdbId";
     // Use OR logic for multi-word searches to find movies matching any term
     // This gives better results for queries like "woman spy" (finds movies with either word)
-    const ftsQuery = searchQuery.split(/\s+/).map(term => `${term}*`).join(' OR ');
-    conditions.push("titles_fts MATCH ?");
-    params.push(ftsQuery);
+    const ftsQuery = searchQuery.split(/\s+/).map((term) => `${term}*`).join(" OR ");
+    // A short/broad query (or even a single common word) can MATCH a huge fraction of the
+    // 12.6M-title FTS index, and ORDER BY needs an unavoidable temp-sort over whatever
+    // titles_fts hands back (no index covers "FTS MATCH" + an external sort column together) —
+    // measured 60s+ and, since better-sqlite3 is synchronous, blocks every other request on the
+    // server while it runs. Capping the raw match count bounds that, but only if the capped
+    // subquery is also what *drives* the query — plain `titles t JOIN (subquery)` still let the
+    // planner scan all 744K+ titles and probe the subquery per row (measured 30s+ on its own).
+    // Putting the subquery first with CROSS JOIN pins the join order so it drives instead.
+    // bm25() has to be computed here, inside the subquery, since it needs direct access to the
+    // titles_fts cursor — it can't be called again from the outer query once joined through.
+    fromClause = `FROM (SELECT imdbId, bm25(titles_fts) AS ftsRank FROM titles_fts WHERE titles_fts MATCH ? LIMIT 5000) fts_m
+      CROSS JOIN titles t ON t.imdbId = fts_m.imdbId`;
+    ftsParams = [ftsQuery];
   }
+  // fromClause's placeholder (when present) appears before the WHERE clause in the assembled
+  // SQL, so its param must be bound first.
+  const withFtsParams = (rest) => (ftsParams.length ? [...ftsParams, ...rest] : rest);
 
-  const genreList = genres.split(",").map((g) => g.trim()).filter((g) => GENRES.includes(g));
-  if (genreList.length) {
-    const genreConds = genreList.map(() => "genres LIKE ?");
-    params.push(...genreList.map((g) => `%,${g},%`));
-    conditions.push(`(${genreConds.join(genreMode === "all" ? " AND " : " OR ")})`);
-  }
+  // Posters are always left-joined (cache-only, no live fetch here). Details are inner-joined
+  // only when a certification filter needs them to match — otherwise left-joined so titles
+  // without cached details still show up (just without cert/overview until background-filled).
+  const extraJoins = `LEFT JOIN posters p ON p.imdbId = t.imdbId ${
+    needsDetailsJoin ? "INNER JOIN" : "LEFT JOIN"
+  } tmdb_details td ON td.imdbId = t.imdbId`;
+  // COUNT(*) doesn't need poster/detail columns, only whether a row matches — so it skips the
+  // posters join entirely (an unfiltering LEFT JOIN just adds ~1 extra index lookup per row for
+  // no benefit) and only joins tmdb_details when the certification filter actually needs it to
+  // restrict rows. Reusing `extraJoins` here was previously turning every count into ~750K
+  // extra index lookups against posters/tmdb_details for data the query throws away.
+  const countJoins = needsDetailsJoin ? "INNER JOIN tmdb_details td ON td.imdbId = t.imdbId" : "";
 
   const whereClause = conditions.join(" AND ");
-  
-  // Sorting: respect user's sortBy preference even during text search
+
   let orderBy;
   if (searchQuery) {
-    // When searching with text, user can choose sorting
     if (sortBy === "rating") {
       orderBy = "rating DESC, votes DESC";
     } else if (sortBy === "year") {
       orderBy = "year DESC, votes DESC";
     } else {
-      // Default: balance relevance with popularity for "most votes" sort
-      // FTS5 bm25() returns negative scores (more negative = more relevant)
-      // We negate bm25 and add vote-based score to prioritize popular + relevant movies
-      orderBy = "(-bm25(titles_fts) + COALESCE(votes, 0) / 10000.0) DESC, votes DESC";
+      // Default: balance relevance with popularity for "most votes" sort.
+      // FTS5 bm25() returns negative scores (more negative = more relevant); negate it
+      // and add a vote-based term so popular + relevant movies rank above obscure exact hits.
+      orderBy = "(-fts_m.ftsRank + COALESCE(votes, 0) / 10000.0) DESC, votes DESC";
     }
   } else {
     orderBy = sortBy === "rating" ? "rating DESC, votes DESC" : sortBy === "year" ? "year DESC, votes DESC" : "votes DESC, rating DESC";
   }
-  
-  const limit = Math.min(parseInt(pageSize, 10) || 50, 100);
-  // When paging through a certification filter, the client passes back the server's
-  // `nextOffset` (raw DB row offset) instead of `page`, since matches don't line up 1:1 with pages.
-  const offset = req.query.offset !== undefined
-    ? parseInt(req.query.offset, 10) || 0
-    : (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit;
 
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM titles t ${ftsJoin} WHERE ${whereClause}`).get(...params).c;
-  const selectSql = `SELECT t.imdbId, t.title, t.year, t.runtimeMinutes, t.genres, t.rating, t.votes, t.titleType FROM titles t ${ftsJoin} WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+  const limit = Math.min(parseInt(pageSize, 10) || 50, 200); // Cap at 200 for performance
+  // When paging through a country filter, the client passes back the server's `nextOffset`
+  // (raw DB row offset) instead of `page`, since matches don't line up 1:1 with pages.
+  const offset =
+    req.query.offset !== undefined
+      ? parseInt(req.query.offset, 10) || 0
+      : (Math.max(parseInt(page, 10) || 1, 1) - 1) * limit;
 
-  // No certification filtering - just fetch and display with details
-  if (!countryList.length) {
-    const rows = db.prepare(selectSql).all(...params, limit, offset).map((r) => ({ ...r, genres: r.genres.split(",").filter(Boolean) }));
-    await attachExtras(rows, { withDetails: true });
-    return res.json({ total, page: Number(page), pageSize: limit, hasMore: offset + rows.length < total, results: rows });
+  // A LEFT JOIN to posters/tmdb_details is cheap per-row, but with a large OFFSET, SQLite must
+  // still evaluate it for every *skipped* row before it can even apply LIMIT/OFFSET — so at
+  // offset ~744,500 (page ~14,891 of the default browse) it was doing ~1.5M extra index probes
+  // just to reach the last page (measured 60s+ hang; without the joins, the same offset takes
+  // ~160ms). Splitting this into "find the matching imdbIds for this page" (no poster/detail
+  // joins — only `countJoins`, since a certification filter needs it to restrict which rows
+  // match at all) and "enrich those <=200 ids with poster/detail data" keeps the join cost
+  // proportional to the page size, not the offset depth.
+  const idSql = `SELECT t.imdbId AS imdbId ${fromClause} ${countJoins} WHERE ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+
+  const mapRow = (r) => ({
+    ...r,
+    genres: r.genres.split(",").filter(Boolean),
+    countries: r.countries ? r.countries.split(",").filter(Boolean) : [],
+  });
+  const stripInternal = (r) => {
+    const { needsPosterFetch, ...rest } = r;
+    return rest;
+  };
+
+  function enrichByIds(imdbIds) {
+    if (!imdbIds.length) return [];
+    const placeholders = imdbIds.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT t.imdbId, t.title, t.year, t.runtimeMinutes, t.genres, t.rating, t.votes, t.titleType,
+                p.tmdbId AS tmdbId, p.posterUrl AS posterUrl, td.certification AS certification, td.countries AS countries, td.overview AS overview,
+                CASE WHEN p.imdbId IS NULL THEN 1 ELSE 0 END AS needsPosterFetch
+         FROM titles t ${extraJoins} WHERE t.imdbId IN (${placeholders})`
+      )
+      .all(...imdbIds);
+    const byId = new Map(rows.map((r) => [r.imdbId, r]));
+    return imdbIds.map((id) => byId.get(id)).filter(Boolean);
   }
 
-  // Country filtering only (rare case) - scan batches
-  const BATCH = 100;
+  if (!countryList.length) {
+    // A genre filter is a `genres LIKE '%,X,%'` condition — there's no index that can satisfy
+    // a leading-wildcard LIKE, so COUNT(*) would force a full scan of every isAdult+titleType
+    // match (hundreds of thousands of rows) just to check that one substring. The SELECT
+    // itself stays fast regardless (it can still walk the sorted index and stop at LIMIT), so
+    // only the exact total is skipped here — hasMore comes from fetching one extra row instead,
+    // the same "approximate" trade-off already used for the country-filter path below.
+    // A capped FTS match count (see above) means a text search can no longer guarantee it saw
+    // every matching title either, so it gets the same approximate-total treatment as genre.
+    const needsExactCount = !parsedFilters.genreList.length && !searchQuery;
+    const idRows = db.prepare(idSql).all(...withFtsParams(params), limit + 1, offset);
+    const hasMore = idRows.length > limit;
+    const pageRows = enrichByIds(idRows.slice(0, limit).map((r) => r.imdbId)).map(mapRow);
+    backgroundFillExtras(pageRows.filter((r) => r.needsPosterFetch));
+
+    const total = needsExactCount
+      ? db.prepare(`SELECT COUNT(*) AS c ${fromClause} ${countJoins} WHERE ${whereClause}`).get(...withFtsParams(params)).c
+      : offset + pageRows.length + (hasMore ? 1 : 0);
+
+    return res.json({
+      total,
+      page: Number(page),
+      pageSize: limit,
+      hasMore,
+      approximate: !needsExactCount,
+      results: pageRows.map(stripInternal),
+    });
+  }
+
+  // Country filtering (rare case): countries live in the same cached join as everything
+  // else now, so this is a pure DB scan — no live TMDb calls block the response anymore.
+  const BATCH = 200;
   const MAX_BATCHES = 50;
   let scanOffset = offset;
   const matches = [];
+  const toBackgroundFill = [];
   let reachedEnd = false;
 
   for (let i = 0; i < MAX_BATCHES; i++) {
-    const batchRows = db
-      .prepare(selectSql)
-      .all(...params, BATCH, scanOffset)
-      .map((r) => ({ ...r, genres: r.genres.split(",").filter(Boolean) }));
-    if (!batchRows.length) {
+    const idRows = db.prepare(idSql).all(...withFtsParams(params), BATCH, scanOffset);
+    if (!idRows.length) {
       reachedEnd = true;
       break;
     }
-    await attachExtras(batchRows, { withDetails: true });
-    matches.push(
-      ...batchRows.filter((m) => {
-        if (countryList.length && !m.countries.some((c) => countryList.includes(c))) return false;
-        return true;
-      })
-    );
+    const batchRows = enrichByIds(idRows.map((r) => r.imdbId)).map(mapRow);
+    for (const r of batchRows) if (r.needsPosterFetch) toBackgroundFill.push(r);
+    matches.push(...batchRows.filter((m) => m.countries.some((c) => countryList.includes(c))));
     scanOffset += batchRows.length;
     if (batchRows.length < BATCH) {
       reachedEnd = true;
@@ -492,7 +607,9 @@ app.get("/api/search", async (req, res) => {
     if (matches.length >= limit) break;
   }
 
-  const paginatedResults = matches.slice(0, limit);
+  backgroundFillExtras(toBackgroundFill);
+
+  const paginatedResults = matches.slice(0, limit).map(stripInternal);
   const actualTotal = matches.length;
   const stoppedEarly = !reachedEnd && matches.length >= limit;
   const hasMore = stoppedEarly || matches.length > limit;
@@ -501,105 +618,171 @@ app.get("/api/search", async (req, res) => {
     total: stoppedEarly ? matches.length + 1 : actualTotal,
     page: Number(page),
     pageSize: limit,
-    hasMore: hasMore,
+    hasMore,
     nextOffset: scanOffset,
     approximate: !reachedEnd,
     results: paginatedResults,
   });
 });
 
-// Semantic search using local AI embeddings (100% free)
-// Uses persistent Python server with pre-loaded AI model for fast searches
+// --- Semantic ("AI") search --------------------------------------------------------------
+// Runs entirely in-process: a local sentence-transformer model (via @huggingface/transformers,
+// WASM backend, no native build step) embeds the query, and cosine similarity is computed in a
+// tight JS loop against an in-memory copy of the `movie_embeddings_local` table loaded at
+// startup. No subprocess, no WSL dependency, no separate/stale database — this is the same
+// data/movies.db the rest of the app uses, so it also works inside the deployed container.
+//
+// Filterable metadata (titleType/rating/votes/year/runtime/genres/certification) for the
+// embedded titles is loaded into memory alongside the vectors at startup too, and filters are
+// applied with a plain JS predicate (matchesFiltersInMemory) rather than a per-request SQL
+// join. A naive `titles INNER JOIN movie_embeddings_local` join measured 12-50s per call in
+// testing: the query planner drives it from `titles` (12.6M rows) instead of the much smaller
+// embeddings table (100K rows), so every semantic search would've done ~12M index probes. Doing
+// that join once at boot (CROSS JOIN forces the correct join order) and filtering the resulting
+// ~100K in-memory records per request instead turns that into microseconds per search.
+let embeddingPipeline = null;
+let embeddingIndex = null; // { imdbIds, vectors: Float32Array, norms: Float32Array, dim, position: Map, meta: [...] }
+let semanticSearchReady = false;
+
+async function initSemanticSearch() {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT e.imdbId, e.embedding, t.titleType, t.rating, t.votes, t.year, t.runtimeMinutes, t.genres, td.certification
+         FROM movie_embeddings_local e
+         CROSS JOIN titles t ON t.imdbId = e.imdbId
+         LEFT JOIN tmdb_details td ON td.imdbId = e.imdbId
+         WHERE t.isAdult = 0`
+      )
+      .all();
+    if (!rows.length) {
+      console.warn("No rows in movie_embeddings_local — semantic search disabled.");
+      return;
+    }
+
+    const dim = rows[0].embedding.byteLength / 4;
+    const vectors = new Float32Array(rows.length * dim);
+    const norms = new Float32Array(rows.length);
+    const imdbIds = new Array(rows.length);
+    const meta = new Array(rows.length);
+    const position = new Map();
+
+    rows.forEach((row, i) => {
+      // Copy into a fresh, 4-byte-aligned ArrayBuffer — better-sqlite3's BLOB Buffers can have
+      // a byteOffset that isn't a multiple of 4, which Float32Array construction requires.
+      const bytes = row.embedding;
+      const vec = new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+      vectors.set(vec, i * dim);
+      let sumSq = 0;
+      for (let j = 0; j < dim; j++) sumSq += vec[j] * vec[j];
+      norms[i] = Math.sqrt(sumSq);
+      imdbIds[i] = row.imdbId;
+      position.set(row.imdbId, i);
+      meta[i] = {
+        titleType: row.titleType,
+        rating: row.rating,
+        votes: row.votes,
+        year: row.year,
+        runtimeMinutes: row.runtimeMinutes,
+        genresList: row.genres ? row.genres.split(",").filter(Boolean) : [],
+        certification: row.certification,
+      };
+    });
+
+    embeddingIndex = { imdbIds, vectors, norms, dim, position, meta };
+    console.log(`Semantic search: loaded ${rows.length.toLocaleString()} embeddings (dim ${dim}) into memory.`);
+
+    console.log("Semantic search: loading local embedding model (Xenova/all-MiniLM-L6-v2)...");
+    const { pipeline } = await import("@huggingface/transformers");
+    embeddingPipeline = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", { dtype: "fp32" });
+
+    semanticSearchReady = true;
+    console.log("Semantic search ready.");
+  } catch (err) {
+    console.error("Semantic search init failed — falling back to keyword search only:", err.message);
+    semanticSearchReady = false;
+  }
+}
+initSemanticSearch();
+
+async function embedQuery(text) {
+  const output = await embeddingPipeline(text, { pooling: "mean", normalize: false });
+  return Float32Array.from(output.data);
+}
+
+function cosineSimilaritySearch(queryVec, parsedFilters, topN) {
+  const { imdbIds, vectors, norms, dim, meta } = embeddingIndex;
+  let qNorm = 0;
+  for (let i = 0; i < dim; i++) qNorm += queryVec[i] * queryVec[i];
+  qNorm = Math.sqrt(qNorm) || 1;
+
+  const scored = [];
+  for (let i = 0; i < imdbIds.length; i++) {
+    if (!matchesFiltersInMemory(meta[i], parsedFilters)) continue;
+    const offset = i * dim;
+    let dot = 0;
+    for (let j = 0; j < dim; j++) dot += queryVec[j] * vectors[offset + j];
+    scored.push({ imdbId: imdbIds[i], similarity: dot / (qNorm * (norms[i] || 1)) });
+  }
+  scored.sort((a, b) => b.similarity - a.similarity);
+  return scored.slice(0, topN);
+}
+
 app.get("/api/semantic-search", async (req, res) => {
   const { q = "", limit = "20" } = req.query;
-  
-  if (!q.trim()) {
-    return res.json({ total: 0, results: [] });
-  }
-  
-  if (!semanticSearchReady || !semanticSearchServer) {
-    return res.status(503).json({ 
-      error: "Semantic search not ready", 
-      details: "AI model is still loading. Please try keyword search or wait a moment." 
+  const query = q.trim();
+
+  if (!query) return res.json({ total: 0, results: [] });
+
+  if (!semanticSearchReady) {
+    return res.status(503).json({
+      error: "Semantic search not ready",
+      details: "The embedding model is still loading. Try again shortly or use keyword search.",
     });
   }
-  
-  const maxResults = Math.min(parseInt(limit, 10) || 20, 10000);
-  
+
+  const maxResults = Math.min(parseInt(limit, 10) || 20, 200);
+
   try {
-    // Send query to persistent Python server
-    const results = await new Promise((resolve, reject) => {
-      let responseData = '';
-      let dataListener, errorListener;
-      
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error('Semantic search timeout'));
-      }, 10000); // 10 second timeout (fast since model is pre-loaded)
-      
-      dataListener = (data) => {
-        responseData += data.toString();
-        
-        // Check if we have a complete JSON response
-        try {
-          const parsed = JSON.parse(responseData);
-          cleanup();
-          clearTimeout(timeout);
-          resolve(parsed);
-        } catch (e) {
-          // Not complete JSON yet, keep waiting
-        }
-      };
-      
-      errorListener = (err) => {
-        cleanup();
-        clearTimeout(timeout);
-        reject(err);
-      };
-      
-      function cleanup() {
-        if (semanticSearchServer && semanticSearchServer.stdout) {
-          semanticSearchServer.stdout.removeListener('data', dataListener);
-        }
-        if (semanticSearchServer) {
-          semanticSearchServer.removeListener('error', errorListener);
-        }
-      }
-      
-      semanticSearchServer.stdout.on('data', dataListener);
-      semanticSearchServer.on('error', errorListener);
-      
-      // Send query
-      semanticSearchServer.stdin.write(q + '\n');
+    // Same filter params as keyword search (genres/rating/votes/year/runtime/type/certification),
+    // applied in memory against the embedded-titles index so semantic search can be scoped just
+    // like a normal browse — new capability, the old subprocess implementation ignored all filters.
+    const parsedFilters = parseFilterParams(req.query);
+    const queryVec = await embedQuery(query);
+    const scored = cosineSimilaritySearch(queryVec, parsedFilters, maxResults);
+
+    if (!scored.length) return res.json({ total: 0, results: [], semantic: true });
+
+    const placeholders = scored.map(() => "?").join(",");
+    const detailRows = db
+      .prepare(
+        `SELECT t.imdbId, t.title, t.year, t.rating, t.votes, t.titleType, t.genres,
+                p.posterUrl AS posterUrl, td.overview AS overview, td.certification AS certification,
+                CASE WHEN p.imdbId IS NULL THEN 1 ELSE 0 END AS needsPosterFetch
+         FROM titles t
+         LEFT JOIN posters p ON p.imdbId = t.imdbId
+         LEFT JOIN tmdb_details td ON td.imdbId = t.imdbId
+         WHERE t.imdbId IN (${placeholders})`
+      )
+      .all(...scored.map((s) => s.imdbId));
+
+    const similarityById = new Map(scored.map((s) => [s.imdbId, s.similarity]));
+    const byId = new Map(detailRows.map((r) => [r.imdbId, r]));
+    const results = scored
+      .map((s) => byId.get(s.imdbId))
+      .filter(Boolean)
+      .map((r) => ({
+        ...r,
+        genres: r.genres ? r.genres.split(",").filter(Boolean) : [],
+        similarity: similarityById.get(r.imdbId),
+      }));
+
+    backgroundFillExtras(results.filter((r) => r.needsPosterFetch));
+    results.forEach((r) => {
+      delete r.needsPosterFetch;
     });
-    
-    if (results.error) {
-      return res.status(500).json({ error: results.error });
-    }
-    
-    const limitedResults = results.slice(0, maxResults);
-    
-    // Format results to match standard search format
-    const formatted = limitedResults.map(r => ({
-      imdbId: r.imdbId,
-      title: r.title,
-      year: r.year,
-      rating: r.rating,
-      votes: r.votes,
-      titleType: 'movie', // Semantic search only includes movies
-      genres: r.genres ? r.genres.split(',').map(g => g.trim()).filter(Boolean) : [],
-      overview: r.overview,
-      similarity: r.similarity
-    }));
-    
-    // Fetch posters for results
-    await attachExtras(formatted, { withDetails: false });
-    
-    res.json({
-      total: results.length,
-      results: formatted,
-      semantic: true
-    });
+
+    res.json({ total: results.length, results, semantic: true });
   } catch (error) {
     console.error("Semantic search error:", error.message);
     res.status(500).json({ error: "Semantic search failed", details: error.message });

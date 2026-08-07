@@ -4,18 +4,27 @@
   "version": "1.0.0",
   "description": "Pipeline: download IMDb's official dataset, filter by genre/rating/votes/runtime, fetch posters from TMDb.",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "download": "node scripts/download-datasets.js",
     "filter": "node scripts/filter-movies.js",
     "posters": "node scripts/fetch-posters.js",
     "import": "node scripts/import-datadump.js",
+    "dev:web": "vite",
+    "build": "vite build",
     "start": "node server.js"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "better-sqlite3": "^13.0.3",
     "csv-parse": "^7.0.2",
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "vite": "^8.2.1"
   }
 }

@@ -1,0 +1,42 @@
+.app-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(15, 17, 21, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.filter-toggle {
+  display: none;
+  background: var(--accent);
+  color: #0f1115;
+  border: none;
+  border-radius: 20px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: 12px 16px;
+  }
+  .app-header h1 {
+    font-size: 17px;
+  }
+  .filter-toggle {
+    display: inline-block;
+  }
+}

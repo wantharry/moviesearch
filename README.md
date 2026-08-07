@@ -6,6 +6,29 @@ official data dumps (real ratings & vote counts) plus TMDb for poster images.
 No scraping: IMDb's site actively blocks bots (AWS WAF), so this uses IMDb's
 published non-commercial dataset instead.
 
+## Running the search app
+
+The frontend (`web/`) is a Vite + React app; `server.js` is the Express API and
+static-file server, and always serves whatever is currently built into `public/`.
+
+```
+npm install
+npm run build      # builds web/ into public/ (run again after any frontend change)
+npm start           # serves public/ + the API at http://localhost:3001
+```
+
+For frontend development with hot reload, run the API and the Vite dev server
+side by side in two terminals:
+
+```
+node server.js       # API on :3001
+npm run dev:web       # Vite dev server on :5173, proxies /api to :3001
+```
+
+Semantic ("AI") search runs entirely in-process (no Python/subprocess
+dependency) using a local embedding model — see `scripts/embeddings/` for the
+offline scripts that generate new embeddings into `movie_embeddings_local`.
+
 ## 1. Download IMDb's dataset (one-time, re-run occasionally to refresh)
 
 ```

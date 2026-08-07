@@ -1,0 +1,31 @@
+.layout {
+  display: flex;
+  gap: 24px;
+  padding: 24px;
+  align-items: flex-start;
+}
+
+.filter-overlay {
+  display: none;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .layout {
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    gap: 0;
+  }
+
+  .filter-overlay.open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 30;
+  }
+}

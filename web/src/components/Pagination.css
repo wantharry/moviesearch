@@ -1,0 +1,70 @@
+.pagination {
+  margin: 20px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.page-btn {
+  padding: 8px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.page-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.page-label,
+.page-jump {
+  color: var(--muted);
+  font-size: 14px;
+  min-width: 120px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.page-input {
+  width: 5.5em;
+  padding: 4px 6px;
+  background: #0f1115;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 14px;
+  text-align: center;
+}
+.page-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+/* Chrome/Safari number-input spinners take up space we don't want at this size */
+.page-input::-webkit-outer-spin-button,
+.page-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+@media (max-width: 420px) {
+  .pagination {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .page-label,
+  .page-jump {
+    min-width: unset;
+    font-size: 13px;
+  }
+}
