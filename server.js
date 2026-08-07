@@ -219,7 +219,6 @@ app.get("/api/search", async (req, res) => {
     minRuntime = "",
     maxRuntime = "",
     titleTypes = "movie",
-    includeAdult = "false",
     sortBy = "votes",
     page = "1",
     pageSize = "50",
@@ -278,9 +277,9 @@ app.get("/api/search", async (req, res) => {
     conditions.push("runtimeMinutes <= ?");
     params.push(parseInt(maxRuntime, 10));
   }
-  if (includeAdult !== "true") {
-    conditions.push("isAdult = 0");
-  }
+  
+  // Always exclude adult content
+  conditions.push("isAdult = 0");
 
   const types = titleTypes.split(",").map((t) => t.trim()).filter((t) => TITLE_TYPES.includes(t));
   if (types.length) {
