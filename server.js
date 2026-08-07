@@ -375,12 +375,20 @@ app.get("/api/search", async (req, res) => {
 
   const whereClause = conditions.join(" AND ");
   
-  // Use FTS5 relevance (bm25) for text searches, otherwise sort by user preference
+  // Sorting: respect user's sortBy preference even during text search
   let orderBy;
   if (searchQuery) {
-    // When searching, balance relevance with popularity
-    // Boost popular movies that match the search terms
-    orderBy = "CASE WHEN votes > 100000 THEN bm25(titles_fts) * 1.5 WHEN votes > 10000 THEN bm25(titles_fts) * 1.2 ELSE bm25(titles_fts) END DESC, votes DESC";
+    // When searching with text, user can choose sorting
+    if (sortBy === "rating") {
+      orderBy = "rating DESC, votes DESC";
+    } else if (sortBy === "year") {
+      orderBy = "year DESC, votes DESC";
+    } else {
+      // Default: balance relevance with popularity for "most votes" sort
+      // FTS5 bm25() returns negative scores (more negative = more relevant)
+      // We negate bm25 and add vote-based score to prioritize popular + relevant movies
+      orderBy = "(-bm25(titles_fts) + COALESCE(votes, 0) / 10000.0) DESC, votes DESC";
+    }
   } else {
     orderBy = sortBy === "rating" ? "rating DESC, votes DESC" : sortBy === "year" ? "year DESC, votes DESC" : "votes DESC, rating DESC";
   }
