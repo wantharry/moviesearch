@@ -30,25 +30,35 @@ function closeFilters() {
   els.filterOverlay.classList.remove("open");
 }
 
+function chip(value, label) {
+  return `<label class="chip"><input type="checkbox" value="${value}" />${label}</label>`;
+}
+
 async function loadFilterOptions() {
   const res = await fetch("/api/genres");
   const { genres, titleTypes, certifications, countries } = await res.json();
 
-  els.genreList.innerHTML = genres
-    .map((g) => `<label><input type="checkbox" value="${g}" /> ${g}</label>`)
-    .join("");
-
-  els.certList.innerHTML = certifications
-    .map((c) => `<label><input type="checkbox" value="${c}" /> ${c}</label>`)
-    .join("");
-
-  els.countryList.innerHTML = countries
-    .map((c) => `<label><input type="checkbox" value="${c.code}" /> ${c.label}</label>`)
-    .join("");
+  els.genreList.innerHTML = genres.map((g) => chip(g, g)).join("");
+  els.certList.innerHTML = certifications.map((c) => chip(c, c)).join("");
+  els.countryList.innerHTML = countries.map((c) => chip(c.code, c.label)).join("");
 
   els.titleTypes.innerHTML = titleTypes
     .map((t) => `<option value="${t}" ${t === "movie" ? "selected" : ""}>${t}</option>`)
     .join("");
+
+  [els.genreList, els.certList, els.countryList].forEach((list) =>
+    list.addEventListener("change", updateCounts)
+  );
+  updateCounts();
+}
+
+function updateCounts() {
+  document.getElementById("genreCount").textContent =
+    els.genreList.querySelectorAll("input:checked").length || "";
+  document.getElementById("certCount").textContent =
+    els.certList.querySelectorAll("input:checked").length || "";
+  document.getElementById("countryCount").textContent =
+    els.countryList.querySelectorAll("input:checked").length || "";
 }
 
 function buildQuery(page, offset) {

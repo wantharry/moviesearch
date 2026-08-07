@@ -27,74 +27,59 @@
         <span>Filters</span>
         <button id="filterClose" class="filter-close" aria-label="Close filters">&times;</button>
       </div>
-      <div class="field">
-        <label>Genres</label>
-        <div id="genre-list" class="genre-list"></div>
+
+      <details class="filter-group" open>
+        <summary>Genres <span class="count" id="genreCount"></span></summary>
+        <div id="genre-list" class="chip-list"></div>
         <div class="genre-mode">
-          <label><input type="radio" name="genreMode" value="any" checked /> Match any</label>
-          <label><input type="radio" name="genreMode" value="all" /> Match all</label>
+          <label><input type="radio" name="genreMode" value="any" checked /> Any</label>
+          <label><input type="radio" name="genreMode" value="all" /> All</label>
         </div>
-      </div>
+      </details>
 
-      <div class="field">
-        <label>Rating</label>
-        <div class="range-row">
-          <input id="minRating" type="number" inputmode="decimal" min="0" max="10" step="0.1" value="6" />
-          <span>to</span>
-          <input id="maxRating" type="number" inputmode="decimal" min="0" max="10" step="0.1" value="10" />
+      <details class="filter-group">
+        <summary>Rating &amp; votes <span class="count" id="ratingCount"></span></summary>
+        <div class="compact-grid">
+          <label class="mini-label">Rating min<input id="minRating" type="number" inputmode="decimal" min="0" max="10" step="0.1" value="6" /></label>
+          <label class="mini-label">Rating max<input id="maxRating" type="number" inputmode="decimal" min="0" max="10" step="0.1" value="10" /></label>
+          <label class="mini-label">Votes min<input id="minVotes" type="number" inputmode="numeric" min="0" value="3000" placeholder="min" /></label>
+          <label class="mini-label">Votes max<input id="maxVotes" type="number" inputmode="numeric" min="0" placeholder="any" /></label>
         </div>
-      </div>
+      </details>
 
-      <div class="field">
-        <label>Number of votes</label>
-        <div class="range-row">
-          <input id="minVotes" type="number" inputmode="numeric" min="0" value="3000" placeholder="min" />
-          <span>to</span>
-          <input id="maxVotes" type="number" inputmode="numeric" min="0" placeholder="max (optional)" />
+      <details class="filter-group">
+        <summary>Year &amp; runtime <span class="count" id="yearCount"></span></summary>
+        <div class="compact-grid">
+          <label class="mini-label">Year min<input id="minYear" type="number" inputmode="numeric" placeholder="min" /></label>
+          <label class="mini-label">Year max<input id="maxYear" type="number" inputmode="numeric" placeholder="max" /></label>
+          <label class="mini-label">Runtime min<input id="minRuntime" type="number" inputmode="numeric" placeholder="min" /></label>
+          <label class="mini-label">Runtime max<input id="maxRuntime" type="number" inputmode="numeric" placeholder="max" /></label>
         </div>
-      </div>
+      </details>
 
-      <div class="field">
-        <label>Release year</label>
-        <div class="range-row">
-          <input id="minYear" type="number" inputmode="numeric" placeholder="min" />
-          <span>to</span>
-          <input id="maxYear" type="number" inputmode="numeric" placeholder="max" />
+      <details class="filter-group">
+        <summary>Type &amp; sort</summary>
+        <div class="compact-grid two-col">
+          <label class="mini-label">Title type<select id="titleTypes" multiple size="4"></select></label>
+          <label class="mini-label">Sort by
+            <select id="sortBy">
+              <option value="votes">Most votes</option>
+              <option value="rating">Highest rated</option>
+              <option value="year">Newest</option>
+            </select>
+          </label>
         </div>
-      </div>
+      </details>
 
-      <div class="field">
-        <label>Runtime (minutes)</label>
-        <div class="range-row">
-          <input id="minRuntime" type="number" inputmode="numeric" placeholder="min" />
-          <span>to</span>
-          <input id="maxRuntime" type="number" inputmode="numeric" placeholder="max" />
-        </div>
-      </div>
+      <details class="filter-group">
+        <summary>Certification <span class="count" id="certCount"></span></summary>
+        <div id="cert-list" class="chip-list"></div>
+      </details>
 
-      <div class="field">
-        <label>Title type</label>
-        <select id="titleTypes" multiple size="4"></select>
-      </div>
-
-      <div class="field">
-        <label>Certification</label>
-        <div id="cert-list" class="genre-list"></div>
-      </div>
-
-      <div class="field">
-        <label>Country</label>
-        <div id="country-list" class="genre-list"></div>
-      </div>
-
-      <div class="field">
-        <label>Sort by</label>
-        <select id="sortBy">
-          <option value="votes">Most votes</option>
-          <option value="rating">Highest rated</option>
-          <option value="year">Newest</option>
-        </select>
-      </div>
+      <details class="filter-group">
+        <summary>Country <span class="count" id="countryCount"></span></summary>
+        <div id="country-list" class="chip-list"></div>
+      </details>
 
       <button id="apply" type="button">Apply Filters</button>
     </aside>
