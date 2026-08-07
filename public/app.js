@@ -196,7 +196,7 @@ async function search(page = 1, append = false, offset = undefined) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       
-      const res = await fetch(`/api/semantic-search?q=${encodeURIComponent(searchQuery)}&limit=100`, {
+      const res = await fetch(`/api/semantic-search?q=${encodeURIComponent(searchQuery)}&limit=10000`, {
         signal: controller.signal
       });
       clearTimeout(timeoutId);

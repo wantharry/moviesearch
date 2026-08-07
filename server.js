@@ -524,7 +524,7 @@ app.get("/api/semantic-search", async (req, res) => {
     });
   }
   
-  const maxResults = Math.min(parseInt(limit, 10) || 20, 100);
+  const maxResults = Math.min(parseInt(limit, 10) || 20, 10000);
   
   try {
     // Send query to persistent Python server
