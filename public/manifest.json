@@ -1,7 +1,7 @@
 {
   "name": "Movie Search",
   "short_name": "Movies",
-  "description": "Browse and filter movies by genre, rating, votes, certification and country.",
+  "description": "Browse and filter movies by genre, rating, votes, year, runtime, and country.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f1115",
