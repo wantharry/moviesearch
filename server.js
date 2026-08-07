@@ -485,7 +485,7 @@ app.get("/api/semantic-search", async (req, res) => {
     stderr += data.toString();
   });
   
-  python.on("close", (code) => {
+  python.on("close", async (code) => {
     if (code !== 0) {
       console.error("Semantic search error:", stderr);
       return res.status(500).json({ error: "Semantic search failed", details: stderr });
@@ -502,10 +502,14 @@ app.get("/api/semantic-search", async (req, res) => {
         year: r.year,
         rating: r.rating,
         votes: r.votes,
+        titleType: 'movie', // Semantic search only includes movies
         genres: r.genres ? r.genres.split(',').map(g => g.trim()).filter(Boolean) : [],
         overview: r.overview,
         similarity: r.similarity
       }));
+      
+      // Fetch posters for results
+      await attachExtras(formatted, { withDetails: false });
       
       res.json({
         total: results.length,

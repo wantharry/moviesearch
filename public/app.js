@@ -6,6 +6,8 @@ const state = {
   movies: [], // Store all loaded movies
   total: 0,
   totalPages: 0,
+  currentSort: 'votes', // 'votes' or 'rating'
+  allResults: [], // Store all results for client-side sorting
 };
 
 const els = {
@@ -39,6 +41,9 @@ const els = {
   searchInput: document.getElementById("searchInput"),
   clearSearch: document.getElementById("clearSearch"),
   autocomplete: document.getElementById("autocomplete"),
+  sortButtons: document.getElementById("sortButtons"),
+  sortByVotes: document.getElementById("sortByVotes"),
+  sortByRating: document.getElementById("sortByRating"),
 };
 
 function openFilters() {
@@ -166,8 +171,10 @@ async function search(page = 1, append = false, offset = undefined) {
   // Clear state AND UI immediately when not appending - this ensures updatePagination hides controls
   if (!append) {
     state.movies = [];
+    state.allResults = [];
     state.total = 0;  // Reset total so updatePagination() will hide pagination
     els.results.innerHTML = renderSkeletonCards(20);
+    els.sortButtons.hidden = true; // Hide sort buttons while loading
   }
   
   els.status.textContent = "Loading...";
@@ -176,6 +183,53 @@ async function search(page = 1, append = false, offset = undefined) {
   els.pagination.hidden = true;
   els.paginationTop.hidden = true;
 
+  const searchQuery = els.searchInput.value.trim();
+  
+  // Use semantic search for text queries
+  if (searchQuery && !append) {
+    els.status.textContent = "🤖 AI semantic search...";
+    try {
+      const res = await fetch(`/api/semantic-search?q=${encodeURIComponent(searchQuery)}&limit=100`);
+      if (!res.ok) throw new Error('Semantic search failed');
+      
+      const data = await res.json();
+      
+      if (data.error) {
+        // Fall back to keyword search
+        console.warn('Semantic search error, falling back to keyword search:', data.error);
+        await keywordSearch(page, append, offset);
+        return;
+      }
+      
+      // Store all results for client-side sorting
+      state.allResults = data.results;
+      state.total = data.results.length;
+      state.totalPages = 1; // All results loaded at once
+      state.hasMore = false;
+      
+      // Apply current sort
+      applySortToResults();
+      
+      // Show sort buttons
+      els.sortButtons.hidden = false;
+      
+      els.status.textContent = `🤖 Found ${data.results.length} movies using AI search`;
+      updatePagination();
+      return;
+    } catch (e) {
+      console.error('Semantic search error:', e);
+      els.status.textContent = "AI search unavailable, using keyword search...";
+      // Fall back to keyword search
+      await keywordSearch(page, append, offset);
+      return;
+    }
+  }
+  
+  // Use regular keyword search
+  await keywordSearch(page, append, offset);
+}
+
+async function keywordSearch(page = 1, append = false, offset = undefined) {
   const params = buildQuery(page, offset);
   const res = await fetch(`/api/search?${params.toString()}`);
   if (!res.ok) {
@@ -474,6 +528,50 @@ document.addEventListener("click", (e) => {
   if (!els.searchInput.contains(e.target) && !els.autocomplete.contains(e.target)) {
     els.autocomplete.hidden = true;
   }
+});
+
+// Client-side sorting functions
+function applySortToResults() {
+  if (!state.allResults.length) return;
+  
+  let sorted = [...state.allResults];
+  
+  if (state.currentSort === 'rating') {
+    sorted.sort((a, b) => {
+      // Sort by rating DESC, then votes DESC
+      const ratingDiff = (b.rating || 0) - (a.rating || 0);
+      if (ratingDiff !== 0) return ratingDiff;
+      return (b.votes || 0) - (a.votes || 0);
+    });
+  } else {
+    // Sort by votes DESC (default)
+    sorted.sort((a, b) => {
+      const votesDiff = (b.votes || 0) - (a.votes || 0);
+      if (votesDiff !== 0) return votesDiff;
+      return (b.rating || 0) - (a.rating || 0);
+    });
+  }
+  
+  state.movies = sorted;
+  
+  // Re-render results
+  els.results.innerHTML = sorted.map((m, i) => renderCard(m, i)).join("");
+  
+  // Update button states
+  els.sortByVotes.classList.toggle('active', state.currentSort === 'votes');
+  els.sortByRating.classList.toggle('active', state.currentSort === 'rating');
+}
+
+els.sortByVotes.addEventListener('click', () => {
+  if (state.currentSort === 'votes') return; // Already sorted
+  state.currentSort = 'votes';
+  applySortToResults();
+});
+
+els.sortByRating.addEventListener('click', () => {
+  if (state.currentSort === 'rating') return; // Already sorted
+  state.currentSort = 'rating';
+  applySortToResults();
 });
 
 // Initialize state and hide pagination before first search to prevent flash during loading
