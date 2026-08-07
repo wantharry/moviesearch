@@ -26,6 +26,57 @@ const GENRES = [
 const TITLE_TYPES = ["movie", "tvMovie", "tvSeries", "tvMiniSeries", "tvSpecial", "short", "video", "videoGame", "tvShort"];
 const TV_TITLE_TYPES = new Set(["tvSeries", "tvMiniSeries", "tvSpecial", "tvShort"]);
 
+// Start persistent semantic search server (keeps AI model loaded in memory)
+let semanticSearchServer = null;
+let semanticSearchReady = false;
+const semanticSearchQueue = [];
+
+function startSemanticSearchServer() {
+  const wslPath = process.env.WINDIR ? `${process.env.WINDIR}\\System32\\wsl.exe` : 'wsl';
+  
+  console.log('Starting AI semantic search server...');
+  semanticSearchServer = spawn(wslPath, [
+    '-d', 'Ubuntu',
+    '-e', 'bash', '-c',
+    'cd ~/imdb-temp && ~/.venvs/semantic-search/bin/python3 /mnt/c/Users/openclaw/projects/ai/apps1/imdb/semantic-server.py'
+  ]);
+  
+  let stderrBuffer = '';
+  
+  semanticSearchServer.stderr.on('data', (data) => {
+    const message = data.toString();
+    stderrBuffer += message;
+    
+    if (message.includes('READY')) {
+      semanticSearchReady = true;
+      console.log('✓ AI semantic search server ready!');
+    } else {
+      process.stderr.write(message);
+    }
+  });
+  
+  semanticSearchServer.on('error', (err) => {
+    console.error('Semantic search server error:', err);
+    semanticSearchReady = false;
+  });
+  
+  semanticSearchServer.on('exit', (code) => {
+    console.log(`Semantic search server exited with code ${code}`);
+    semanticSearchReady = false;
+    semanticSearchServer = null;
+  });
+}
+
+// Start the persistent server
+startSemanticSearchServer();
+
+// Cleanup on exit
+process.on('exit', () => {
+  if (semanticSearchServer) {
+    semanticSearchServer.kill();
+  }
+});
+
 // Certifications removed - shown on cards only, not for filtering
 const COUNTRIES = [
   { code: "US", label: "USA" },
@@ -458,6 +509,7 @@ app.get("/api/search", async (req, res) => {
 });
 
 // Semantic search using local AI embeddings (100% free)
+// Uses persistent Python server with pre-loaded AI model for fast searches
 app.get("/api/semantic-search", async (req, res) => {
   const { q = "", limit = "20" } = req.query;
   
@@ -465,62 +517,93 @@ app.get("/api/semantic-search", async (req, res) => {
     return res.json({ total: 0, results: [] });
   }
   
+  if (!semanticSearchReady || !semanticSearchServer) {
+    return res.status(503).json({ 
+      error: "Semantic search not ready", 
+      details: "AI model is still loading. Please try keyword search or wait a moment." 
+    });
+  }
+  
   const maxResults = Math.min(parseInt(limit, 10) || 20, 100);
   
-  // Call Python script via WSL
-  const python = spawn("wsl", [
-    "-d", "Ubuntu",
-    "-e", "bash", "-c",
-    `cd ~/imdb-temp && ~/.venvs/semantic-search/bin/python3 /mnt/c/Users/openclaw/projects/ai/apps1/imdb/local-semantic-search-wsl.py json "${q.replace(/"/g, '\\"')}"`
-  ]);
-  
-  let stdout = "";
-  let stderr = "";
-  
-  python.stdout.on("data", (data) => {
-    stdout += data.toString();
-  });
-  
-  python.stderr.on("data", (data) => {
-    stderr += data.toString();
-  });
-  
-  python.on("close", async (code) => {
-    if (code !== 0) {
-      console.error("Semantic search error:", stderr);
-      return res.status(500).json({ error: "Semantic search failed", details: stderr });
+  try {
+    // Send query to persistent Python server
+    const results = await new Promise((resolve, reject) => {
+      let responseData = '';
+      let dataListener, errorListener;
+      
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Semantic search timeout'));
+      }, 10000); // 10 second timeout (fast since model is pre-loaded)
+      
+      dataListener = (data) => {
+        responseData += data.toString();
+        
+        // Check if we have a complete JSON response
+        try {
+          const parsed = JSON.parse(responseData);
+          cleanup();
+          clearTimeout(timeout);
+          resolve(parsed);
+        } catch (e) {
+          // Not complete JSON yet, keep waiting
+        }
+      };
+      
+      errorListener = (err) => {
+        cleanup();
+        clearTimeout(timeout);
+        reject(err);
+      };
+      
+      function cleanup() {
+        if (semanticSearchServer && semanticSearchServer.stdout) {
+          semanticSearchServer.stdout.removeListener('data', dataListener);
+        }
+        if (semanticSearchServer) {
+          semanticSearchServer.removeListener('error', errorListener);
+        }
+      }
+      
+      semanticSearchServer.stdout.on('data', dataListener);
+      semanticSearchServer.on('error', errorListener);
+      
+      // Send query
+      semanticSearchServer.stdin.write(q + '\n');
+    });
+    
+    if (results.error) {
+      return res.status(500).json({ error: results.error });
     }
     
-    try {
-      const results = JSON.parse(stdout);
-      const limitedResults = results.slice(0, maxResults);
-      
-      // Format results to match standard search format
-      const formatted = limitedResults.map(r => ({
-        imdbId: r.imdbId,
-        title: r.title,
-        year: r.year,
-        rating: r.rating,
-        votes: r.votes,
-        titleType: 'movie', // Semantic search only includes movies
-        genres: r.genres ? r.genres.split(',').map(g => g.trim()).filter(Boolean) : [],
-        overview: r.overview,
-        similarity: r.similarity
-      }));
-      
-      // Fetch posters for results
-      await attachExtras(formatted, { withDetails: false });
-      
-      res.json({
-        total: results.length,
-        results: formatted,
-        semantic: true
-      });
-    } catch (e) {
-      console.error("Failed to parse semantic search results:", e.message);
-      res.status(500).json({ error: "Failed to parse results", details: e.message });
-    }
-  });
+    const limitedResults = results.slice(0, maxResults);
+    
+    // Format results to match standard search format
+    const formatted = limitedResults.map(r => ({
+      imdbId: r.imdbId,
+      title: r.title,
+      year: r.year,
+      rating: r.rating,
+      votes: r.votes,
+      titleType: 'movie', // Semantic search only includes movies
+      genres: r.genres ? r.genres.split(',').map(g => g.trim()).filter(Boolean) : [],
+      overview: r.overview,
+      similarity: r.similarity
+    }));
+    
+    // Fetch posters for results
+    await attachExtras(formatted, { withDetails: false });
+    
+    res.json({
+      total: results.length,
+      results: formatted,
+      semantic: true
+    });
+  } catch (error) {
+    console.error("Semantic search error:", error.message);
+    res.status(500).json({ error: "Semantic search failed", details: error.message });
+  }
 });
 
 app.listen(PORT, () => {

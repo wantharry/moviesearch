@@ -44,6 +44,7 @@ const els = {
   sortButtons: document.getElementById("sortButtons"),
   sortByVotes: document.getElementById("sortByVotes"),
   sortByRating: document.getElementById("sortByRating"),
+  useSemanticSearch: document.getElementById("useSemanticSearch"),
 };
 
 function openFilters() {
@@ -185,11 +186,21 @@ async function search(page = 1, append = false, offset = undefined) {
 
   const searchQuery = els.searchInput.value.trim();
   
-  // Use semantic search for text queries
-  if (searchQuery && !append) {
+  // Use semantic search only if enabled and has text query
+  const useSemanticSearch = els.useSemanticSearch.checked && searchQuery && !append;
+  
+  if (useSemanticSearch) {
     els.status.textContent = "🤖 AI semantic search...";
     try {
-      const res = await fetch(`/api/semantic-search?q=${encodeURIComponent(searchQuery)}&limit=100`);
+      // Set 10 second timeout for semantic search (model is pre-loaded, should be fast)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      const res = await fetch(`/api/semantic-search?q=${encodeURIComponent(searchQuery)}&limit=100`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
       if (!res.ok) throw new Error('Semantic search failed');
       
       const data = await res.json();

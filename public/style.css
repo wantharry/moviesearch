@@ -67,6 +67,31 @@ header h1 { margin: 0; font-size: 20px; }
   position: relative;
 }
 
+.search-mode {
+  max-width: 600px;
+  margin: 8px auto 0;
+  display: flex;
+  justify-content: center;
+}
+
+.search-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.search-mode-toggle:hover {
+  color: var(--text);
+}
+
+.search-mode-toggle input[type="checkbox"] {
+  cursor: pointer;
+}
+
 #searchInput {
   width: 100%;
   padding: 12px 40px 12px 16px;
