@@ -175,7 +175,6 @@ async function search(page = 1, append = false, offset = undefined) {
     state.allResults = [];
     state.total = 0;  // Reset total so updatePagination() will hide pagination
     els.results.innerHTML = renderSkeletonCards(20);
-    els.sortButtons.hidden = true; // Hide sort buttons while loading
   }
   
   els.status.textContent = "Loading...";
@@ -220,9 +219,6 @@ async function search(page = 1, append = false, offset = undefined) {
       
       // Apply current sort
       applySortToResults();
-      
-      // Show sort buttons
-      els.sortButtons.hidden = false;
       
       els.status.textContent = `🤖 Found ${data.results.length} movies using AI search`;
       updatePagination();
@@ -270,14 +266,9 @@ async function keywordSearch(page = 1, append = false, offset = undefined) {
     : `${data.total.toLocaleString()} movies match`;
   
   updatePagination();
-}
-
-function updatePagination() {
-  // Hide pagination if no results or no movies loaded yet
-  if (state.total === 0 || state.movies.length === 0) {
-    els.pagination.hidden = true;
-    els.paginationTop.hidden = true;
-    return;
+  
+  // Update sort button states based on sortBy dropdown
+  updateSortButtonStates();
   }
   
   els.pagination.hidden = false;
@@ -569,20 +560,41 @@ function applySortToResults() {
   els.results.innerHTML = sorted.map((m, i) => renderCard(m, i)).join("");
   
   // Update button states
-  els.sortByVotes.classList.toggle('active', state.currentSort === 'votes');
-  els.sortByRating.classList.toggle('active', state.currentSort === 'rating');
+  updateSortButtonStates();
+}
+
+function updateSortButtonStates() {
+  const sortBy = document.getElementById('sortBy').value;
+  els.sortByVotes.classList.toggle('active', sortBy === 'votes');
+  els.sortByRating.classList.toggle('active', sortBy === 'rating');
 }
 
 els.sortByVotes.addEventListener('click', () => {
-  if (state.currentSort === 'votes') return; // Already sorted
-  state.currentSort = 'votes';
-  applySortToResults();
+  // For AI search with all results loaded: use client-side sorting
+  if (state.allResults.length > 0) {
+    if (state.currentSort === 'votes') return; // Already sorted
+    state.currentSort = 'votes';
+    applySortToResults();
+  } else {
+    // For regular browse/search: update sortBy dropdown and reload
+    document.getElementById('sortBy').value = 'votes';
+    updateSortButtonStates();
+    search(1, false);
+  }
 });
 
 els.sortByRating.addEventListener('click', () => {
-  if (state.currentSort === 'rating') return; // Already sorted
-  state.currentSort = 'rating';
-  applySortToResults();
+  // For AI search with all results loaded: use client-side sorting
+  if (state.allResults.length > 0) {
+    if (state.currentSort === 'rating') return; // Already sorted
+    state.currentSort = 'rating';
+    applySortToResults();
+  } else {
+    // For regular browse/search: update sortBy dropdown and reload
+    document.getElementById('sortBy').value = 'rating';
+    updateSortButtonStates();
+    search(1, false);
+  }
 });
 
 // Initialize state and hide pagination before first search to prevent flash during loading
