@@ -3,6 +3,7 @@
 const path = require("path");
 const express = require("express");
 const Database = require("better-sqlite3");
+const { spawn } = require("child_process");
 
 try {
   process.loadEnvFile(path.join(__dirname, ".env"));
@@ -13,7 +14,7 @@ try {
 const DATA_DIR = path.join(__dirname, "data");
 const DB_PATH = path.join(DATA_DIR, "movies.db");
 const TMDB_API_KEY = process.env.TMDB_API_KEY || "";
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 const GENRES = [
   "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary",
@@ -87,15 +88,16 @@ try {
 }
 
 const getCachedPoster = db.prepare("SELECT tmdbId, posterUrl FROM posters WHERE imdbId = ?");
-const savePoster = db.prepare(
-  "INSERT INTO posters (imdbId, tmdbId, posterUrl, fetchedAt) VALUES (@imdbId, @tmdbId, @posterUrl, @fetchedAt) " +
-  "ON CONFLICT(imdbId) DO UPDATE SET tmdbId=excluded.tmdbId, posterUrl=excluded.posterUrl, fetchedAt=excluded.fetchedAt"
-);
+// Posters and TMDb details are pre-populated, no need to insert
+// const savePoster = db.prepare(
+//   "INSERT INTO posters (imdbId, tmdbId, posterUrl, fetchedAt) VALUES (@imdbId, @tmdbId, @posterUrl, @fetchedAt) " +
+//   "ON CONFLICT(imdbId) DO UPDATE SET tmdbId=excluded.tmdbId, posterUrl=excluded.posterUrl, fetchedAt=excluded.fetchedAt"
+// );
 const getCachedDetails = db.prepare("SELECT certification, countries, overview FROM tmdb_details WHERE imdbId = ?");
-const saveDetails = db.prepare(
-  "INSERT INTO tmdb_details (imdbId, certification, countries, overview, fetchedAt) VALUES (@imdbId, @certification, @countries, @overview, @fetchedAt) " +
-  "ON CONFLICT(imdbId) DO UPDATE SET certification=excluded.certification, countries=excluded.countries, overview=excluded.overview, fetchedAt=excluded.fetchedAt"
-);
+// const saveDetails = db.prepare(
+//   "INSERT INTO tmdb_details (imdbId, certification, countries, overview, fetchedAt) VALUES (@imdbId, @certification, @countries, @overview, @fetchedAt) " +
+//   "ON CONFLICT(imdbId) DO UPDATE SET certification=excluded.certification, countries=excluded.countries, overview=excluded.overview, fetchedAt=excluded.fetchedAt"
+// );
 
 // TMDb issues two key formats: a short v3 api_key (query param) and a long
 // v4 "read access token" JWT (Bearer header). Support whichever was pasted.
@@ -357,7 +359,9 @@ app.get("/api/search", async (req, res) => {
   let ftsJoin = "";
   if (searchQuery) {
     ftsJoin = "JOIN titles_fts ON titles_fts.imdbId = t.imdbId";
-    const ftsQuery = searchQuery.split(/\s+/).map(term => `${term}*`).join(' ');
+    // Use OR logic for multi-word searches to find movies matching any term
+    // This gives better results for queries like "woman spy" (finds movies with either word)
+    const ftsQuery = searchQuery.split(/\s+/).map(term => `${term}*`).join(' OR ');
     conditions.push("titles_fts MATCH ?");
     params.push(ftsQuery);
   }
@@ -370,7 +374,17 @@ app.get("/api/search", async (req, res) => {
   }
 
   const whereClause = conditions.join(" AND ");
-  const orderBy = sortBy === "rating" ? "rating DESC, votes DESC" : sortBy === "year" ? "year DESC, votes DESC" : "votes DESC, rating DESC";
+  
+  // Use FTS5 relevance (bm25) for text searches, otherwise sort by user preference
+  let orderBy;
+  if (searchQuery) {
+    // When searching, balance relevance with popularity
+    // Boost popular movies that match the search terms
+    orderBy = "CASE WHEN votes > 100000 THEN bm25(titles_fts) * 1.5 WHEN votes > 10000 THEN bm25(titles_fts) * 1.2 ELSE bm25(titles_fts) END DESC, votes DESC";
+  } else {
+    orderBy = sortBy === "rating" ? "rating DESC, votes DESC" : sortBy === "year" ? "year DESC, votes DESC" : "votes DESC, rating DESC";
+  }
+  
   const limit = Math.min(parseInt(pageSize, 10) || 50, 100);
   // When paging through a certification filter, the client passes back the server's
   // `nextOffset` (raw DB row offset) instead of `page`, since matches don't line up 1:1 with pages.
@@ -432,6 +446,68 @@ app.get("/api/search", async (req, res) => {
     nextOffset: scanOffset,
     approximate: !reachedEnd,
     results: paginatedResults,
+  });
+});
+
+// Semantic search using local AI embeddings (100% free)
+app.get("/api/semantic-search", async (req, res) => {
+  const { q = "", limit = "20" } = req.query;
+  
+  if (!q.trim()) {
+    return res.json({ total: 0, results: [] });
+  }
+  
+  const maxResults = Math.min(parseInt(limit, 10) || 20, 100);
+  
+  // Call Python script via WSL
+  const python = spawn("wsl", [
+    "-d", "Ubuntu",
+    "-e", "bash", "-c",
+    `cd ~/imdb-temp && ~/.venvs/semantic-search/bin/python3 /mnt/c/Users/openclaw/projects/ai/apps1/imdb/local-semantic-search-wsl.py json "${q.replace(/"/g, '\\"')}"`
+  ]);
+  
+  let stdout = "";
+  let stderr = "";
+  
+  python.stdout.on("data", (data) => {
+    stdout += data.toString();
+  });
+  
+  python.stderr.on("data", (data) => {
+    stderr += data.toString();
+  });
+  
+  python.on("close", (code) => {
+    if (code !== 0) {
+      console.error("Semantic search error:", stderr);
+      return res.status(500).json({ error: "Semantic search failed", details: stderr });
+    }
+    
+    try {
+      const results = JSON.parse(stdout);
+      const limitedResults = results.slice(0, maxResults);
+      
+      // Format results to match standard search format
+      const formatted = limitedResults.map(r => ({
+        imdbId: r.imdbId,
+        title: r.title,
+        year: r.year,
+        rating: r.rating,
+        votes: r.votes,
+        genres: r.genres ? r.genres.split(',').map(g => g.trim()).filter(Boolean) : [],
+        overview: r.overview,
+        similarity: r.similarity
+      }));
+      
+      res.json({
+        total: results.length,
+        results: formatted,
+        semantic: true
+      });
+    } catch (e) {
+      console.error("Failed to parse semantic search results:", e.message);
+      res.status(500).json({ error: "Failed to parse results", details: e.message });
+    }
   });
 });
 
