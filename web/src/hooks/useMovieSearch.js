@@ -21,7 +21,7 @@ export const DEFAULT_FILTERS = {
 };
 
 const PAGE_SIZE = 50;
-const SEMANTIC_LIMIT = 50000;
+const SEMANTIC_LIMIT = 20000;
 
 function titleTypesFor(filters) {
   return filters.titleType === "all" ? "movie,tvSeries,tvMovie,tvMiniSeries,tvSpecial" : filters.titleType;

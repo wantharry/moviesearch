@@ -798,7 +798,7 @@ app.get("/api/semantic-search", async (req, res) => {
     });
   }
 
-  const maxResults = Math.min(parseInt(limit, 10) || 20, 50000);
+  const maxResults = Math.min(parseInt(limit, 10) || 20, 20000);
 
   try {
     // Same filter params as keyword search (genres/rating/votes/year/runtime/type/certification),
