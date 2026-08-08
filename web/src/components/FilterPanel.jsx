@@ -139,23 +139,7 @@ export default function FilterPanel({ search, genreOptions, countryOptions, tagO
         </div>
       </details>
 
-      <details className="filter-group">
-        <summary>
-          Country <span className="count">{filters.countries.length || ""}</span>
-        </summary>
-        <div className="chip-list">
-          {countryOptions.map((country) => (
-            <label className="chip" key={country.code}>
-              <input
-                type="checkbox"
-                checked={filters.countries.includes(country.code)}
-                onChange={() => update("countries", toggleValue(filters.countries, country.code))}
-              />
-              {country.label}
-            </label>
-          ))}
-        </div>
-      </details>
+      {/* Country filter hidden until countries backfill has real coverage — see FilterPanel props/useMovieSearch, both left intact to re-enable easily. */}
 
       <button className="apply-button" type="button" onClick={handleApply}>
         Apply Filters
