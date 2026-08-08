@@ -836,6 +836,8 @@ const NO_FILTERS = {
   genreList: [],
   genreMode: "any",
   certs: [],
+  tagList: [],
+  tagMode: "any",
 };
 
 app.get("/api/semantic-search", async (req, res) => {
