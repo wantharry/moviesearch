@@ -54,6 +54,14 @@ export default function MovieModal({ movie, onClose }) {
                   ? "Loading details..."
                   : details.overview || "No description available."}
             </p>
+            <a
+              className="modal-imdb-link"
+              href={`https://www.imdb.com/title/${movie.imdbId}/`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View on IMDb &rarr;
+            </a>
           </div>
         </div>
       </div>

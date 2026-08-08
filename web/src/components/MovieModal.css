@@ -110,6 +110,18 @@
   margin: 0;
 }
 
+.modal-imdb-link {
+  display: inline-block;
+  margin-top: 16px;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.modal-imdb-link:hover {
+  text-decoration: underline;
+}
+
 @media (max-width: 768px) {
   .modal-body {
     flex-direction: column;
