@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { fetchAutocomplete } from "../api.js";
 import "./SearchBar.css";
 
-export default function SearchBar({ search }) {
-  const { query, setQuery, useSemanticSearch, setUseSemanticSearch, submitSearch, clearSearch, selectAutocomplete } = search;
+export default function SearchBar({ search, onOpenMovie }) {
+  const { query, setQuery, useSemanticSearch, setUseSemanticSearch, submitSearch, clearSearch } = search;
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -57,9 +57,14 @@ export default function SearchBar({ search }) {
     setQuery(e.target.value);
   }
 
-  function handleSelect(title) {
+  // Selecting an autocomplete suggestion opens that specific movie directly (a fast, tiny
+  // /api/movie/:id fetch) rather than launching a whole new AI search "for movies like this
+  // one" — that was both slow (a multi-MB response for the large default result count) and
+  // not what clicking a specific title in a dropdown implies.
+  function handleSelect(movie) {
     closeSuggestions();
-    selectAutocomplete(title);
+    setQuery(movie.title);
+    onOpenMovie(movie);
   }
 
   // A raw "Enter" keydown on a text input isn't reliably fired by every mobile keyboard (the
@@ -82,7 +87,7 @@ export default function SearchBar({ search }) {
       setSelectedIndex((i) => Math.max(i - 1, -1));
     } else if (e.key === "Enter" && selectedIndex >= 0 && suggestions[selectedIndex]) {
       e.preventDefault();
-      handleSelect(suggestions[selectedIndex].title);
+      handleSelect(suggestions[selectedIndex]);
     } else if (e.key === "Escape") {
       closeSuggestions();
     }
@@ -119,7 +124,7 @@ export default function SearchBar({ search }) {
                 <div
                   key={movie.imdbId}
                   className={`autocomplete-item${index === selectedIndex ? " selected" : ""}`}
-                  onClick={() => handleSelect(movie.title)}
+                  onClick={() => handleSelect(movie)}
                 >
                   {movie.posterUrl ? (
                     <img src={movie.posterUrl} alt={movie.title} loading="lazy" />

@@ -27,7 +27,7 @@ export default function App() {
   return (
     <>
       <Header onToggleFilters={() => setFiltersOpen(true)} />
-      <SearchBar search={search} />
+      <SearchBar search={search} onOpenMovie={setSelectedMovie} />
       <div className="layout">
         {filtersOpen && <div className="filter-overlay open" onClick={() => setFiltersOpen(false)} />}
         <FilterPanel

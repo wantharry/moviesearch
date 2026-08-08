@@ -226,14 +226,6 @@ export function useMovieSearch() {
     runSearch({ pageArg: 1, queryOverride: "" });
   }, [runSearch]);
 
-  const selectAutocomplete = useCallback(
-    (title) => {
-      setQuery(title);
-      runSearch({ pageArg: 1, queryOverride: title });
-    },
-    [runSearch]
-  );
-
   const applyFilters = useCallback(() => runSearch({ pageArg: 1 }), [runSearch]);
 
   const setTitleType = useCallback(
@@ -339,7 +331,6 @@ export function useMovieSearch() {
     isSemanticResult,
     submitSearch,
     clearSearch,
-    selectAutocomplete,
     applyFilters,
     setTitleType,
     setSortBy,
