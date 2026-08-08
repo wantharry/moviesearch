@@ -4,7 +4,7 @@ function toggleValue(list, value) {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 }
 
-export default function FilterPanel({ search, genreOptions, countryOptions, open, onClose }) {
+export default function FilterPanel({ search, genreOptions, countryOptions, tagOptions, open, onClose }) {
   const { filters, setFilters, applyFilters } = search;
 
   function update(key, value) {
@@ -52,6 +52,48 @@ export default function FilterPanel({ search, genreOptions, countryOptions, open
           </label>
         </div>
       </details>
+
+      <div className="filter-group">
+        <div className="tags-header">
+          <label className="tags-toggle">
+            <input
+              type="checkbox"
+              checked={filters.tagsEnabled}
+              onChange={() => update("tagsEnabled", !filters.tagsEnabled)}
+            />
+            <span>
+              Tags <span className="tags-badge">AI</span>
+            </span>
+          </label>
+          {filters.tagsEnabled && filters.tags.length > 0 && <span className="count">{filters.tags.length}</span>}
+        </div>
+        {filters.tagsEnabled && (
+          <>
+            <div className="chip-list">
+              {tagOptions.map((tag) => (
+                <label className="chip" key={tag}>
+                  <input
+                    type="checkbox"
+                    checked={filters.tags.includes(tag)}
+                    onChange={() => update("tags", toggleValue(filters.tags, tag))}
+                  />
+                  {tag}
+                </label>
+              ))}
+            </div>
+            <div className="genre-mode">
+              <label>
+                <input type="radio" name="tagMode" checked={filters.tagMode === "any"} onChange={() => update("tagMode", "any")} />
+                Any of them
+              </label>
+              <label>
+                <input type="radio" name="tagMode" checked={filters.tagMode === "all"} onChange={() => update("tagMode", "all")} />
+                All of them
+              </label>
+            </div>
+          </>
+        )}
+      </div>
 
       <details className="filter-group">
         <summary>Rating &amp; votes</summary>

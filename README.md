@@ -29,6 +29,19 @@ Semantic ("AI") search runs entirely in-process (no Python/subprocess
 dependency) using a local embedding model — see `scripts/embeddings/` for the
 offline scripts that generate new embeddings into `movie_embeddings_local`.
 
+"Vibe" tags (Heist, Whodunit, Slow Burn Romance, ...) are computed from those
+same embeddings against a curated phrase list — see `tag-vocabulary.js` and
+`scripts/embeddings/generate-tags.js`:
+
+```
+DB_PATH=data/movies.db node scripts/embeddings/generate-tags.js
+```
+
+Takes well under a minute (it's pure vector math over embeddings that already
+exist, no new model calls per movie). Re-run it after regenerating embeddings,
+or after editing `tag-vocabulary.js`. Restart the server afterward so it
+reloads the in-memory index — `title_tags` is read once at startup.
+
 ### Slow local disk (e.g. WSL with the repo on `/mnt/c`)?
 
 If `data/movies.db` sits on a slow or virtualized filesystem (WSL2's `/mnt/c`

@@ -3,6 +3,7 @@
 const path = require("path");
 const express = require("express");
 const Database = require("better-sqlite3");
+const { TAG_VOCABULARY } = require("./tag-vocabulary.js");
 
 try {
   process.loadEnvFile(path.join(__dirname, ".env"));
@@ -24,6 +25,11 @@ const GENRES = [
 
 const TITLE_TYPES = ["movie", "tvMovie", "tvSeries", "tvMiniSeries", "tvSpecial", "short", "video", "videoGame", "tvShort"];
 const TV_TITLE_TYPES = new Set(["tvSeries", "tvMiniSeries", "tvSpecial", "tvShort"]);
+
+// AI-assigned "vibe" tags (Heist, Whodunit, Slow Burn Romance, ...) — see tag-vocabulary.js and
+// scripts/embeddings/generate-tags.js for how these get computed and populated into title_tags.
+const TAGS = TAG_VOCABULARY.map((t) => t.label);
+const TAG_SET = new Set(TAGS);
 
 const COUNTRIES = [
   { code: "US", label: "USA" },
@@ -267,6 +273,8 @@ function parseFilterParams(query) {
     titleTypes = "movie",
     certFilter = "",
     countries = "",
+    tags = "",
+    tagMode = "any",
   } = query;
 
   return {
@@ -283,6 +291,8 @@ function parseFilterParams(query) {
     genreMode,
     certs: certFilter ? certFilter.split(",").map((c) => c.trim()).filter(Boolean) : [],
     countryList: countries.split(",").map((c) => c.trim()).filter((c) => COUNTRY_CODES.has(c)),
+    tagList: tags.split(",").map((t) => t.trim()).filter((t) => TAG_SET.has(t)),
+    tagMode,
   };
 }
 
@@ -344,6 +354,22 @@ function buildSqlConditions(parsed) {
     params.push(...parsed.certs);
   }
 
+  // title_tags is properly indexed on (tag, imdbId) — unlike genres' LIKE scan, this stays fast
+  // regardless of how many tags are selected. "All" mode needs every selected tag present, so it
+  // counts distinct matches and requires that to equal the number of tags asked for.
+  if (parsed.tagList.length) {
+    const placeholders = parsed.tagList.map(() => "?").join(",");
+    if (parsed.tagMode === "all") {
+      conditions.push(
+        `(SELECT COUNT(DISTINCT tg.tag) FROM title_tags tg WHERE tg.imdbId = t.imdbId AND tg.tag IN (${placeholders})) = ?`
+      );
+      params.push(...parsed.tagList, parsed.tagList.length);
+    } else {
+      conditions.push(`EXISTS (SELECT 1 FROM title_tags tg WHERE tg.imdbId = t.imdbId AND tg.tag IN (${placeholders}))`);
+      params.push(...parsed.tagList);
+    }
+  }
+
   return { conditions, params, needsDetailsJoin };
 }
 
@@ -373,6 +399,14 @@ function matchesFiltersInMemory(meta, parsed) {
   }
 
   if (parsed.certs.length && !parsed.certs.includes(meta.certification)) return false;
+
+  if (parsed.tagList.length) {
+    const match =
+      parsed.tagMode === "all"
+        ? parsed.tagList.every((tag) => meta.tagsList.includes(tag))
+        : parsed.tagList.some((tag) => meta.tagsList.includes(tag));
+    if (!match) return false;
+  }
 
   return true;
 }
@@ -406,7 +440,7 @@ app.get("/api/movie/:imdbId", async (req, res) => {
 });
 
 app.get("/api/genres", (req, res) => {
-  res.json({ genres: GENRES, titleTypes: TITLE_TYPES, countries: COUNTRIES });
+  res.json({ genres: GENRES, titleTypes: TITLE_TYPES, countries: COUNTRIES, tags: TAGS });
 });
 
 app.get("/api/autocomplete", (req, res) => {
@@ -646,9 +680,19 @@ let semanticSearchReady = false;
 
 async function initSemanticSearch() {
   try {
+    // title_tags only exists once scripts/embeddings/generate-tags.js has been run — degrade to
+    // "no tags" rather than fail the whole app if it hasn't been (e.g. a fresh clone).
+    const hasTagsTable = Boolean(
+      db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='title_tags'`).get()
+    );
+    const tagsSelect = hasTagsTable
+      ? `(SELECT GROUP_CONCAT(tg.tag, '|') FROM title_tags tg WHERE tg.imdbId = e.imdbId) AS tagsConcat`
+      : `NULL AS tagsConcat`;
+
     const rows = db
       .prepare(
-        `SELECT e.imdbId, e.embedding, t.titleType, t.rating, t.votes, t.year, t.runtimeMinutes, t.genres, td.certification
+        `SELECT e.imdbId, e.embedding, t.titleType, t.rating, t.votes, t.year, t.runtimeMinutes, t.genres, td.certification,
+                ${tagsSelect}
          FROM movie_embeddings_local e
          CROSS JOIN titles t ON t.imdbId = e.imdbId
          LEFT JOIN tmdb_details td ON td.imdbId = e.imdbId
@@ -686,6 +730,7 @@ async function initSemanticSearch() {
         runtimeMinutes: row.runtimeMinutes,
         genresList: row.genres ? row.genres.split(",").filter(Boolean) : [],
         certification: row.certification,
+        tagsList: row.tagsConcat ? row.tagsConcat.split("|") : [],
       };
     });
 

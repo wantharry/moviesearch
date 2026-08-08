@@ -18,6 +18,10 @@ export const DEFAULT_FILTERS = {
   // when there's no search query (server/semantic results are already in a sensible default
   // order in that case); it only does something once a query exists.
   pg13: false,
+  tagsEnabled: false, // AI-assigned "vibe" tags (Heist, Whodunit, ...) are opt-in — off by default
+  // so the filter panel isn't cluttered with an extra section most searches don't need.
+  tags: [],
+  tagMode: "any",
 };
 
 const PAGE_SIZE = 50;
@@ -43,6 +47,10 @@ function buildFilterParams(filters) {
     maxRuntime: filters.maxRuntime || "",
     sortBy: filters.sortBy,
     certFilter: filters.pg13 ? "G,PG,PG-13,TV-G,TV-PG,TV-14" : "",
+    // Tags stay off the wire entirely when disabled — no point sending an empty filter that'd
+    // no-op server-side anyway, and it keeps the "off" state unambiguous in the URL too.
+    tags: filters.tagsEnabled ? filters.tags.join(",") : "",
+    tagMode: filters.tagMode,
   };
 }
 
@@ -94,6 +102,9 @@ function paramsFromUrl() {
   if (p.has("type")) filters.titleType = p.get("type");
   if (p.has("sortBy")) filters.sortBy = p.get("sortBy");
   if (p.has("pg13")) filters.pg13 = p.get("pg13") === "1";
+  if (p.has("tagsOn")) filters.tagsEnabled = p.get("tagsOn") === "1";
+  if (p.has("tags")) filters.tags = p.get("tags").split(",").filter(Boolean);
+  if (p.has("tagMode")) filters.tagMode = p.get("tagMode");
   return {
     query: p.get("q") || "",
     useSemanticSearch: p.has("ai") ? p.get("ai") === "1" : true,
@@ -120,6 +131,11 @@ function updateUrl({ query, useSemanticSearch, filters, page }) {
   if (filters.titleType !== DEFAULT_FILTERS.titleType) params.set("type", filters.titleType);
   if (filters.sortBy !== DEFAULT_FILTERS.sortBy) params.set("sortBy", filters.sortBy);
   if (filters.pg13) params.set("pg13", "1");
+  if (filters.tagsEnabled) {
+    params.set("tagsOn", "1");
+    if (filters.tags.length) params.set("tags", filters.tags.join(","));
+    if (filters.tagMode !== DEFAULT_FILTERS.tagMode) params.set("tagMode", filters.tagMode);
+  }
   if (page > 1) params.set("page", String(page));
   const qs = params.toString();
   window.history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);

@@ -14,6 +14,7 @@ export default function App() {
   const search = useMovieSearch();
   const [genreOptions, setGenreOptions] = useState([]);
   const [countryOptions, setCountryOptions] = useState([]);
+  const [tagOptions, setTagOptions] = useState([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selectedMovie, setSelectedMovie] = useState(null);
 
@@ -21,6 +22,7 @@ export default function App() {
     fetchGenres().then((data) => {
       setGenreOptions(data.genres);
       setCountryOptions(data.countries);
+      setTagOptions(data.tags || []);
     });
   }, []);
 
@@ -34,6 +36,7 @@ export default function App() {
           search={search}
           genreOptions={genreOptions}
           countryOptions={countryOptions}
+          tagOptions={tagOptions}
           open={filtersOpen}
           onClose={() => setFiltersOpen(false)}
         />

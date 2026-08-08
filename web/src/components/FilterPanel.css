@@ -62,7 +62,7 @@
   transform: rotate(-90deg);
 }
 
-.filter-group summary .count {
+.filter-group .count {
   color: var(--bg);
   background: var(--accent);
   font-size: 11px;
@@ -71,12 +71,44 @@
   padding: 1px 7px;
   margin-left: 8px;
 }
-.filter-group summary .count:empty {
+.filter-group .count:empty {
   display: none;
 }
 
 .filter-group > *:not(summary) {
   margin-top: 10px;
+}
+
+.tags-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tags-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  user-select: none;
+}
+.tags-toggle input {
+  cursor: pointer;
+}
+
+.tags-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin-left: 2px;
+  vertical-align: middle;
 }
 
 .chip-list {
