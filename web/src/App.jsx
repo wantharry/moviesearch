@@ -44,7 +44,7 @@ export default function App() {
           <Pagination search={search} />
         </main>
       </div>
-      {selectedMovie && <MovieModal movie={selectedMovie} onClose={() => setSelectedMovie(null)} />}
+      {selectedMovie && <MovieModal movie={selectedMovie} onClose={() => setSelectedMovie(null)} onSelect={setSelectedMovie} />}
     </>
   );
 }

@@ -1,21 +1,28 @@
 import { useEffect, useState } from "react";
-import { fetchMovie } from "../api.js";
+import { fetchMovie, fetchSimilarMovies } from "../api.js";
 import "./MovieModal.css";
 
-export default function MovieModal({ movie, onClose }) {
+export default function MovieModal({ movie, onClose, onSelect }) {
   const [details, setDetails] = useState(null);
   const [failed, setFailed] = useState(false);
+  const [similar, setSimilar] = useState(null);
 
   useEffect(() => {
     document.body.style.overflow = "hidden";
     setDetails(null);
     setFailed(false);
+    setSimilar(null);
 
     const controller = new AbortController();
     fetchMovie(movie.imdbId, controller.signal)
       .then(setDetails)
       .catch((err) => {
         if (err.name !== "AbortError") setFailed(true);
+      });
+    fetchSimilarMovies(movie.imdbId, controller.signal)
+      .then((data) => setSimilar(data.results))
+      .catch((err) => {
+        if (err.name !== "AbortError") setSimilar([]);
       });
 
     function handleKeyDown(e) {
@@ -64,6 +71,31 @@ export default function MovieModal({ movie, onClose }) {
             </a>
           </div>
         </div>
+
+        {similar === null ? (
+          <div className="modal-similar">
+            <h3>More Like This</h3>
+            <p className="modal-similar-loading">Finding similar movies...</p>
+          </div>
+        ) : similar.length > 0 ? (
+          <div className="modal-similar">
+            <h3>More Like This</h3>
+            <div className="modal-similar-grid">
+              {similar.map((m) => (
+                <div className="modal-similar-card" key={m.imdbId} onClick={() => onSelect(m)}>
+                  {m.posterUrl ? (
+                    <img src={m.posterUrl} alt={m.title} loading="lazy" />
+                  ) : (
+                    <div className="modal-similar-no-poster">No poster</div>
+                  )}
+                  <div className="modal-similar-title" title={m.title}>
+                    {m.title}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

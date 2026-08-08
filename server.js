@@ -728,6 +728,61 @@ function cosineSimilaritySearch(queryVec, parsedFilters, topN) {
   return scored.slice(0, topN);
 }
 
+// Turns a list of {imdbId, similarity} into full result objects (title/poster/etc.), preserving
+// the input's order and rank, and kicks off a background cache-fill for any missing posters.
+// Shared by /api/semantic-search and /api/similar/:imdbId — same enrichment either way, the
+// only difference is where the (imdbId, similarity) pairs came from.
+function enrichScoredResults(scored) {
+  if (!scored.length) return [];
+  const placeholders = scored.map(() => "?").join(",");
+  const detailRows = db
+    .prepare(
+      `SELECT t.imdbId, t.title, t.year, t.rating, t.votes, t.titleType, t.genres,
+              p.posterUrl AS posterUrl, td.overview AS overview, td.certification AS certification,
+              CASE WHEN p.imdbId IS NULL THEN 1 ELSE 0 END AS needsPosterFetch
+       FROM titles t
+       LEFT JOIN posters p ON p.imdbId = t.imdbId
+       LEFT JOIN tmdb_details td ON td.imdbId = t.imdbId
+       WHERE t.imdbId IN (${placeholders})`
+    )
+    .all(...scored.map((s) => s.imdbId));
+
+  const similarityById = new Map(scored.map((s) => [s.imdbId, s.similarity]));
+  const byId = new Map(detailRows.map((r) => [r.imdbId, r]));
+  const results = scored
+    .map((s) => byId.get(s.imdbId))
+    .filter(Boolean)
+    .map((r) => ({
+      ...r,
+      genres: r.genres ? r.genres.split(",").filter(Boolean) : [],
+      similarity: similarityById.get(r.imdbId),
+    }));
+
+  backgroundFillExtras(results.filter((r) => r.needsPosterFetch));
+  results.forEach((r) => {
+    delete r.needsPosterFetch;
+  });
+  return results;
+}
+
+// No filter restrictions — used for "more like this", which should be able to surface a similar
+// TV series for a movie (or vice versa) rather than being pinned to parseFilterParams' movie-only
+// default.
+const NO_FILTERS = {
+  types: [],
+  minRatingVal: 0,
+  maxRatingVal: 10,
+  minVotesVal: 0,
+  maxVotesVal: null,
+  minYearVal: null,
+  maxYearVal: null,
+  minRuntimeVal: null,
+  maxRuntimeVal: null,
+  genreList: [],
+  genreMode: "any",
+  certs: [],
+};
+
 app.get("/api/semantic-search", async (req, res) => {
   const { q = "", limit = "20" } = req.query;
   const query = q.trim();
@@ -750,42 +805,49 @@ app.get("/api/semantic-search", async (req, res) => {
     const parsedFilters = parseFilterParams(req.query);
     const queryVec = await embedQuery(query);
     const scored = cosineSimilaritySearch(queryVec, parsedFilters, maxResults);
-
-    if (!scored.length) return res.json({ total: 0, results: [], semantic: true });
-
-    const placeholders = scored.map(() => "?").join(",");
-    const detailRows = db
-      .prepare(
-        `SELECT t.imdbId, t.title, t.year, t.rating, t.votes, t.titleType, t.genres,
-                p.posterUrl AS posterUrl, td.overview AS overview, td.certification AS certification,
-                CASE WHEN p.imdbId IS NULL THEN 1 ELSE 0 END AS needsPosterFetch
-         FROM titles t
-         LEFT JOIN posters p ON p.imdbId = t.imdbId
-         LEFT JOIN tmdb_details td ON td.imdbId = t.imdbId
-         WHERE t.imdbId IN (${placeholders})`
-      )
-      .all(...scored.map((s) => s.imdbId));
-
-    const similarityById = new Map(scored.map((s) => [s.imdbId, s.similarity]));
-    const byId = new Map(detailRows.map((r) => [r.imdbId, r]));
-    const results = scored
-      .map((s) => byId.get(s.imdbId))
-      .filter(Boolean)
-      .map((r) => ({
-        ...r,
-        genres: r.genres ? r.genres.split(",").filter(Boolean) : [],
-        similarity: similarityById.get(r.imdbId),
-      }));
-
-    backgroundFillExtras(results.filter((r) => r.needsPosterFetch));
-    results.forEach((r) => {
-      delete r.needsPosterFetch;
-    });
-
+    const results = enrichScoredResults(scored);
     res.json({ total: results.length, results, semantic: true });
   } catch (error) {
     console.error("Semantic search error:", error.message);
     res.status(500).json({ error: "Semantic search failed", details: error.message });
+  }
+});
+
+// "More like this" — nearest neighbors to a specific title's embedding, rather than a typed
+// query. Uses the title's own stored embedding directly when it has one (best quality, no model
+// call needed); falls back to embedding its title+genres on the fly for the ~92% of titles
+// outside the embedded set, so the feature still works for those, just at slightly lower quality.
+app.get("/api/similar/:imdbId", async (req, res) => {
+  const { imdbId } = req.params;
+  const limit = Math.min(parseInt(req.query.limit, 10) || 12, 50);
+
+  if (!semanticSearchReady) {
+    return res.status(503).json({
+      error: "Semantic search not ready",
+      details: "The embedding model is still loading. Try again shortly.",
+    });
+  }
+
+  try {
+    const { vectors, dim, position } = embeddingIndex;
+    let queryVec;
+
+    const idx = position.get(imdbId);
+    if (idx !== undefined) {
+      queryVec = vectors.slice(idx * dim, idx * dim + dim);
+    } else {
+      const row = db.prepare(`SELECT title, genres FROM titles WHERE imdbId = ?`).get(imdbId);
+      if (!row) return res.status(404).json({ error: "Movie not found" });
+      const genres = row.genres ? row.genres.split(",").filter(Boolean).join(", ") : "";
+      queryVec = await embedQuery(`${row.title}. Genres: ${genres}`);
+    }
+
+    const scored = cosineSimilaritySearch(queryVec, NO_FILTERS, limit + 1).filter((s) => s.imdbId !== imdbId);
+    const results = enrichScoredResults(scored.slice(0, limit));
+    res.json({ results });
+  } catch (error) {
+    console.error("Similar-movies error:", error.message);
+    res.status(500).json({ error: "Failed to find similar movies", details: error.message });
   }
 });
 

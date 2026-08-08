@@ -29,3 +29,7 @@ export function fetchSemanticSearch(params, signal) {
 export function fetchMovie(imdbId, signal) {
   return getJson(`/api/movie/${encodeURIComponent(imdbId)}`, signal);
 }
+
+export function fetchSimilarMovies(imdbId, signal) {
+  return getJson(`/api/similar/${encodeURIComponent(imdbId)}`, signal);
+}
