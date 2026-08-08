@@ -452,7 +452,11 @@ app.get("/api/autocomplete", (req, res) => {
   }
 
   try {
-    const searchQuery = query.split(/\s+/).map((term) => `${term}*`).join(" ");
+    // Restrict MATCH to title/overview only — titles_fts also indexes `genres`, and leaving it
+    // in scope means a plain genre word like "thriller*" matches every title tagged with that
+    // genre (213K of them, including 100-year-old shorts), which is not what a free-text search
+    // box query means. Genre filtering already has its own dedicated UI control.
+    const searchQuery = query.split(/\s+/).map((term) => `{title overview}: ${term}*`).join(" ");
     // A short prefix (e.g. "Mo*") can match a huge fraction of the 12.6M-title FTS index —
     // `ORDER BY votes DESC` over that many matches forces SQLite to materialize and sort all
     // of them (no index can satisfy an FTS MATCH + external-column ORDER BY together), which
@@ -493,7 +497,11 @@ app.get("/api/search", (req, res) => {
   if (searchQuery) {
     // Use OR logic for multi-word searches to find movies matching any term
     // This gives better results for queries like "woman spy" (finds movies with either word)
-    const ftsQuery = searchQuery.split(/\s+/).map((term) => `${term}*`).join(" OR ");
+    // Restricted to title/overview only — see the matching comment in /api/autocomplete for why
+    // `genres` must be excluded from free-text MATCH (it makes plain genre words like "thriller"
+    // match the entire genre, not just relevant titles, and its short field length also lets
+    // bm25() score those genre-only matches unrealistically high).
+    const ftsQuery = searchQuery.split(/\s+/).map((term) => `{title overview}: ${term}*`).join(" OR ");
     // A short/broad query (or even a single common word) can MATCH a huge fraction of the
     // 12.6M-title FTS index, and ORDER BY needs an unavoidable temp-sort over whatever
     // titles_fts hands back (no index covers "FTS MATCH" + an external sort column together) —
