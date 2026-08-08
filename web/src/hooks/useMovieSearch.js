@@ -14,7 +14,9 @@ export const DEFAULT_FILTERS = {
   maxRuntime: "",
   countries: [],
   titleType: "movie", // 'movie' | 'tvSeries' | 'all'
-  sortBy: "votes", // 'votes' | 'rating'
+  sortBy: "relevance", // 'relevance' | 'votes' | 'rating' — relevance is a no-op sort placeholder
+  // when there's no search query (server/semantic results are already in a sensible default
+  // order in that case); it only does something once a query exists.
   pg13: false,
 };
 
@@ -44,12 +46,17 @@ function buildFilterParams(filters) {
   };
 }
 
-function sortByVotesOrRating(list, sortBy) {
+// Only meaningful for semantic-search results, which carry a per-result `similarity` score —
+// keyword search's "relevance" (bm25 blended with votes) is already applied server-side by
+// default, so this only needs to handle re-sorting the client-side semantic result set.
+function sortResults(list, sortBy) {
   const sorted = [...list];
   if (sortBy === "rating") {
     sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0) || (b.votes || 0) - (a.votes || 0));
-  } else {
+  } else if (sortBy === "votes") {
     sorted.sort((a, b) => (b.votes || 0) - (a.votes || 0) || (b.rating || 0) - (a.rating || 0));
+  } else {
+    sorted.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
   }
   return sorted;
 }
@@ -154,7 +161,7 @@ export function useMovieSearch() {
         if (activeSemantic && activeQuery) {
           const params = new URLSearchParams({ q: activeQuery, limit: String(SEMANTIC_LIMIT), ...buildFilterParams(activeFilters) });
           const data = await fetchSemanticSearch(params, controller.signal);
-          const sorted = sortByVotesOrRating(data.results, activeFilters.sortBy);
+          const sorted = sortResults(data.results, activeFilters.sortBy);
           setAllSemanticResults(sorted);
           const firstPage = sliceSemanticPage(sorted, 1);
           setResults(firstPage.results);
@@ -243,7 +250,7 @@ export function useMovieSearch() {
       const next = { ...filters, sortBy };
       setFilters(next);
       if (isSemanticResult) {
-        const sorted = sortByVotesOrRating(allSemanticResults, sortBy);
+        const sorted = sortResults(allSemanticResults, sortBy);
         setAllSemanticResults(sorted);
         const firstPage = sliceSemanticPage(sorted, 1);
         setResults(firstPage.results);

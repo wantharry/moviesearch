@@ -1,7 +1,8 @@
 import "./TypeSortBar.css";
 
 export default function TypeSortBar({ search }) {
-  const { filters, setTitleType, setSortBy, togglePg13, statusMessage, loading } = search;
+  const { query, filters, setTitleType, setSortBy, togglePg13, statusMessage, loading } = search;
+  const hasQuery = query.trim().length > 0;
 
   return (
     <div className="status-bar">
@@ -21,6 +22,11 @@ export default function TypeSortBar({ search }) {
         </div>
         <div className="button-group">
           <span className="group-label">Sort:</span>
+          {hasQuery && (
+            <button className={`filter-btn${filters.sortBy === "relevance" ? " active" : ""}`} onClick={() => setSortBy("relevance")}>
+              Relevancy
+            </button>
+          )}
           <button className={`filter-btn${filters.sortBy === "votes" ? " active" : ""}`} onClick={() => setSortBy("votes")}>
             Most Popular
           </button>
