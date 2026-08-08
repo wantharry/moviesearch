@@ -553,15 +553,15 @@ app.get("/api/search", (req, res) => {
   }
 
   if (!countryList.length) {
-    // A genre filter is a `genres LIKE '%,X,%'` condition — there's no index that can satisfy
-    // a leading-wildcard LIKE, so COUNT(*) would force a full scan of every isAdult+titleType
-    // match (hundreds of thousands of rows) just to check that one substring. The SELECT
-    // itself stays fast regardless (it can still walk the sorted index and stop at LIMIT), so
-    // only the exact total is skipped here — hasMore comes from fetching one extra row instead,
-    // the same "approximate" trade-off already used for the country-filter path below.
-    // A capped FTS match count (see above) means a text search can no longer guarantee it saw
-    // every matching title either, so it gets the same approximate-total treatment as genre.
-    const needsExactCount = !parsedFilters.genreList.length && !searchQuery;
+    // A genre filter is a `genres LIKE '%,X,%'` condition — no index can satisfy a leading-
+    // wildcard LIKE, so counting it means a full scan of every isAdult+titleType match checking
+    // that substring (~1s now that the DB is served from RAM; it was 30s+ on disk, which is why
+    // this used to skip the exact count entirely). That's a fine one-time cost for a correct
+    // "page 1 of 32" instead of the misleading "page 1 of 2" the approximate lower-bound
+    // produced — it only ever showed "one page past wherever you currently are," never the real
+    // total, however many times you clicked Next. A capped FTS match count (see above) is a
+    // different, correctness-driven reason a text search still can't guarantee an exact count.
+    const needsExactCount = !searchQuery;
     const idRows = db.prepare(idSql).all(...withFtsParams(params), limit + 1, offset);
     const hasMore = idRows.length > limit;
     const pageRows = enrichByIds(idRows.slice(0, limit).map((r) => r.imdbId)).map(mapRow);
